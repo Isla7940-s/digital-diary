@@ -13,20 +13,37 @@ export interface Attachment {
 }
 
 export interface Entry {
-  id: string; date: string; seq: number; title: string; note: string; tags: string[];
+  id: string; date: string; seq: number; title: string; note: string; body: string; tags: string[];
   created_at: string; updated_at: string; deleted_at: string | null;
 }
 
 export interface EntryWithAttachments extends Entry { pages: Attachment[]; media: Attachment[] }
-export interface EntrySummary extends Entry {
+export interface EntrySummary extends Omit<Entry, "body"> {
   counts: Record<Kind, number>; media_count: number; page_count: number;
+  /** 正文纯文字字数与开头摘录（列表里不返回完整正文） */
+  body_chars: number; excerpt: string;
   cover: Attachment | null; preview: Attachment[];
 }
 
 export class NotFound extends Error {}
 export class BadInput extends Error {}
+/** 保存正文时发现服务器上的版本已被别处修改（例如另一个旧页面），附带当前正文 */
+export class Conflict extends Error {
+  constructor(message: string, readonly body: string) { super(message); }
+}
+
+/** 正文指纹（FNV-1a 32 位，与前端 md.js 的 bodyHash 一致），用来判断保存时的基准版本是否还是最新 */
+export function bodyHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const BODY_MAX = 500_000;
 const KINDS: Kind[] = ["image", "video", "audio", "text", "file"];
 
 export function todayStr(d = new Date()): string {
@@ -47,6 +64,29 @@ function validDate(date: string): boolean {
   if (!DATE_RE.test(date)) return false;
   const d = new Date(`${date}T00:00:00Z`);
   return !isNaN(d.getTime()) && d.toISOString().startsWith(date);
+}
+
+function cleanBody(body: unknown): string {
+  const s = String(body ?? "").replace(/\r\n?/g, "\n").replace(/\s+$/, "");
+  if (s.length > BODY_MAX) throw new BadInput(`正文过长（${s.length} 字符，上限 ${BODY_MAX}）`);
+  return s;
+}
+
+/** 正文 Markdown → 纯文字：用于摘录、字数和搜索 */
+export function plainText(md: string): string {
+  return md
+    .replace(/^```.*$/gm, "")
+    .replace(/!\[((?:\\.|[^\]\\])*)\]\(media:[^)]*\)/g, "$1")
+    .replace(/\[((?:\\.|[^\]\\])*)\]\([^)]*\)/g, "$1")
+    .replace(/^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+\[[ xX]\][ \t]+|[-*+][ \t]+|\d+[.)][ \t]+)/gm, "")
+    .replace(/^[ \t]*(?:-{3,}|\*{3,})[ \t]*$/gm, "")
+    .replace(/\*\*|~~|`|(?<!\\)\*/g, "")
+    .replace(/\\([\\`*_{}[\]()#+\-.!>~|])/g, "$1");
+}
+
+/** 正文中引用的影像 id（按出现顺序去重） */
+export function bodyRefs(md: string): string[] {
+  return [...new Set([...md.matchAll(/!\[(?:\\.|[^\]\\])*\]\(media:([\w-]+)\)/g)].map((m) => m[1]))];
 }
 
 function cleanTags(tags: unknown): string[] {
@@ -79,7 +119,7 @@ export class Store {
   // ---------- 日记 ----------
 
   /** 新建日记并分配编号；可同时把图库中已选的媒体归入这篇日记 */
-  createEntry(input: { date?: string; title?: string; note?: string; tags?: string[]; media_ids?: string[]; page_ids?: string[] } = {}): EntryWithAttachments {
+  createEntry(input: { date?: string; title?: string; note?: string; body?: string; tags?: string[]; media_ids?: string[]; page_ids?: string[] } = {}): EntryWithAttachments {
     const date = input.date ?? todayStr();
     if (!validDate(date)) throw new BadInput(`日期格式应为 YYYY-MM-DD：${date}`);
     const id = this.db.transaction(() => {
@@ -88,8 +128,8 @@ export class Store {
       this.db.prepare("INSERT INTO day_counters(date, last_seq) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET last_seq = excluded.last_seq").run(date, seq);
       const id = makeId(date, seq);
       const now = nowIso();
-      this.db.prepare(`INSERT INTO entries(id, date, seq, title, note, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-        .run(id, date, seq, (input.title ?? "").trim(), input.note ?? "", JSON.stringify(cleanTags(input.tags)), now, now);
+      this.db.prepare(`INSERT INTO entries(id, date, seq, title, note, body, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+        .run(id, date, seq, (input.title ?? "").trim(), input.note ?? "", cleanBody(input.body), JSON.stringify(cleanTags(input.tags)), now, now);
       if (input.media_ids?.length) this.assign(input.media_ids, id, "media");
       if (input.page_ids?.length) this.assign(input.page_ids, id, "page");
       this.refreshFts(id);
@@ -112,13 +152,16 @@ export class Store {
     return { ...e, pages: atts.filter((a) => a.role === "page"), media: atts.filter((a) => a.role === "media") };
   }
 
-  listEntries(opts: { from?: string; to?: string; tag?: string; q?: string; hasPages?: boolean; limit?: number; offset?: number } = {}) {
+  listEntries(opts: { from?: string; to?: string; tag?: string; q?: string; hasPages?: boolean; readable?: boolean; limit?: number; offset?: number } = {}) {
     const where = ["e.deleted_at IS NULL"];
     const args: unknown[] = [];
     if (opts.from) { where.push("e.date >= ?"); args.push(opts.from); }
     if (opts.to) { where.push("e.date <= ?"); args.push(opts.to); }
     if (opts.tag) { where.push("EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)"); args.push(opts.tag); }
-    if (opts.hasPages) where.push("EXISTS (SELECT 1 FROM attachments a WHERE a.entry_id = e.id AND a.role = 'page' AND a.deleted_at IS NULL)");
+    const hasPages = "EXISTS (SELECT 1 FROM attachments a WHERE a.entry_id = e.id AND a.role = 'page' AND a.deleted_at IS NULL)";
+    if (opts.hasPages) where.push(hasPages);
+    // 可阅读：有纸质原稿或已有转写正文
+    if (opts.readable) where.push(`(${hasPages} OR e.body <> '')`);
     for (const t of (opts.q ?? "").split(/\s+/).filter(Boolean)) {
       where.push("e.id IN (SELECT id FROM entries_fts WHERE body LIKE ? ESCAPE '\\')");
       args.push(likeArg(t));
@@ -132,7 +175,7 @@ export class Store {
     return { total, limit, offset, items: rows.map((r) => this.summarize(rowToEntry(r))) };
   }
 
-  private summarize(e: Entry): EntrySummary {
+  private summarize({ body, ...e }: Entry): EntrySummary {
     const atts = this.db.prepare("SELECT * FROM attachments WHERE entry_id = ? AND deleted_at IS NULL ORDER BY position, taken_at")
       .all(e.id) as Attachment[];
     const media = atts.filter((a) => a.role === "media");
@@ -140,22 +183,32 @@ export class Store {
     const counts = Object.fromEntries(KINDS.map((k) => [k, 0])) as Record<Kind, number>;
     for (const a of media) counts[a.kind]++;
     const visual = media.filter((a) => a.thumb);
+    const text = plainText(body).replace(/\s+/g, " ").trim();
     return {
       ...e, counts, media_count: media.length, page_count: pages.length,
+      body_chars: text.replace(/\s/g, "").length, excerpt: text.slice(0, 140),
       cover: visual[0] ?? pages.find((a) => a.thumb) ?? null,
       preview: visual.slice(0, 8),
     };
   }
 
-  updateEntry(id: string, patch: { title?: string; note?: string; tags?: string[] }): EntryWithAttachments {
+  /**
+   * body_base：调用方编辑时所基于的正文指纹。传了就做乐观锁检查，
+   * 防止一个打开很久的旧页面把别处的新内容覆盖掉；不传（例如 MCP）则直接覆盖
+   */
+  updateEntry(id: string, patch: { title?: string; note?: string; body?: string; body_base?: string; tags?: string[] }): EntryWithAttachments {
     const e = this.entryRow(id);
+    if (patch.body !== undefined && patch.body_base !== undefined && bodyHash(e.body) !== patch.body_base) {
+      throw new Conflict("这篇文章已在别处被修改", e.body);
+    }
     const next = {
-      title: patch.title !== undefined ? patch.title.trim() : e.title,
-      note: patch.note !== undefined ? patch.note : e.note,
+      title: patch.title !== undefined ? String(patch.title).trim() : e.title,
+      note: patch.note !== undefined ? String(patch.note) : e.note,
+      body: patch.body !== undefined ? cleanBody(patch.body) : e.body,
       tags: patch.tags !== undefined ? cleanTags(patch.tags) : e.tags,
     };
-    this.db.prepare("UPDATE entries SET title = ?, note = ?, tags = ?, updated_at = ? WHERE id = ?")
-      .run(next.title, next.note, JSON.stringify(next.tags), nowIso(), e.id);
+    this.db.prepare("UPDATE entries SET title = ?, note = ?, body = ?, tags = ?, updated_at = ? WHERE id = ?")
+      .run(next.title, next.note, next.body, JSON.stringify(next.tags), nowIso(), e.id);
     this.refreshFts(e.id);
     return this.getEntry(e.id);
   }
@@ -418,7 +471,7 @@ export class Store {
     this.db.prepare("DELETE FROM entries_fts WHERE id = ?").run(entryId);
     if (!e) return;
     const atts = this.db.prepare("SELECT * FROM attachments WHERE entry_id = ? AND deleted_at IS NULL").all(entryId) as Attachment[];
-    const body = [e.id, e.date, e.title, e.note, ...JSON.parse(e.tags), ...atts.flatMap((a) => [a.original_name, a.caption, textContent(a)])].join("\n");
+    const body = [e.id, e.date, e.title, e.note, plainText(e.body), ...JSON.parse(e.tags), ...atts.flatMap((a) => [a.original_name, a.caption, textContent(a)])].join("\n");
     this.db.prepare("INSERT INTO entries_fts(id, body) VALUES (?, ?)").run(entryId, body);
   }
 }

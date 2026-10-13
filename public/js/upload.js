@@ -97,6 +97,9 @@ export function installDrop(getTarget) {
     e.preventDefault();
     depth = 0; ov.hidden = true;
     const t = getTarget();
-    if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files, t);
+    if (!e.dataTransfer.files.length) return;
+    // 页面可以接管拖入的文件（例如正文编辑器：上传后插入到落点）
+    if (t.onFiles) t.onFiles([...e.dataTransfer.files], e);
+    else uploadFiles(e.dataTransfer.files, t);
   });
 }

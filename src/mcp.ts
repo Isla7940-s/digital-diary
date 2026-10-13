@@ -5,14 +5,19 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { config, paths } from "./config.js";
 import { storeFile, tmpPath } from "./media.js";
-import { todayStr, type Store, type Attachment } from "./store.js";
+import { todayStr, bodyRefs, type Store, type Attachment, type EntryWithAttachments } from "./store.js";
 
 const INSTRUCTIONS = `这是一本「数字日记」的连接器。主人在纸质笔记本上手写日记，这里管理与之关联的内容：
 - 图库：所有图片、视频、录音等文件。文件可以暂不归组（entry_id 为空）。
 - 日记：每篇真实的纸质日记对应一个编号，格式 YYMMDD-序号（如 261013-1），写回本子上做关联，永不复用。一天可以有多篇。
   每篇日记包含两类文件：role=media 的富媒体（一组图片/视频/录音），role=page 的纸质原稿（手写页的照片，用于阅读）。
 - 典型流程：上传文件到图库 → 选出一组 → create_entry(media_ids=[...]) 分配编号；或 assign_media 归入已有日记。
-- 删除只会移入回收站，可用 restore_* 恢复；永久删除只能由主人在网页回收站完成。文件内容只写不改。`;
+- 删除只会移入回收站，可用 restore_* 恢复；永久删除只能由主人在网页回收站完成。文件内容只写不改。
+- 正文 body：纸质日记转写成的文字（Markdown），可与影像图文混排。转写流程：get_entry 拿到 pages → get_media 逐页查看手写原稿 →
+  update_entry(body=...) 写入。影像用单独一行 ![说明](media:附件ID) 插入，ID 取自这篇日记的 media；正文只描述纸上写的内容，不要编造。
+  支持的语法：# / ## / ### 标题、段落、- 列表、1. 列表、- [ ] 待办、> 引用、\`\`\` 代码块、--- 分割线、**粗体** *斜体* ~~删除线~~ \`代码\` [链接](url)。`;
+
+const BODY_HELP = "转写正文（Markdown，整体替换）。影像单独一行写 ![说明](media:附件ID)，ID 来自本篇日记的 media；传空字符串清空正文。";
 
 export function withUrls(a: Attachment) {
   return {
@@ -30,6 +35,13 @@ function entryOut<T extends { id: string; pages?: Attachment[]; media?: Attachme
     ...(e.pages ? { pages: e.pages.map(withUrls) } : {}),
     ...(e.media ? { media: e.media.map(withUrls) } : {}),
   };
+}
+
+/** 正文里引用了不属于本篇的影像时提醒调用方（网页上会显示为「影像不可用」） */
+function withRefCheck(e: EntryWithAttachments) {
+  const own = new Set([...e.media, ...e.pages].map((a) => a.id));
+  const unknown = bodyRefs(e.body).filter((id) => !own.has(id));
+  return { ...entryOut(e), ...(unknown.length ? { warning: `正文引用的影像不在这篇日记中：${unknown.join(", ")}。可先用 assign_media 归入。` } : {}) };
 }
 
 const json = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -88,7 +100,7 @@ export function buildMcpServer(store: Store): McpServer {
 
   server.registerTool("search", {
     title: "搜索日记",
-    description: "全文搜索编号、标题、备注、标签、文件名与说明、文字文件内容（支持中文）。",
+    description: "全文搜索编号、标题、正文、备注、标签、文件名与说明、文字文件内容（支持中文）。",
     inputSchema: { query: z.string().min(1), limit: z.number().int().min(1).max(200).optional() },
     annotations: { readOnlyHint: true },
   }, async (a) => {
@@ -98,7 +110,7 @@ export function buildMcpServer(store: Store): McpServer {
 
   server.registerTool("get_entry", {
     title: "查看日记",
-    description: "按编号（如 261013-1）获取一篇日记：纸质原稿 pages 与富媒体 media（含下载链接）。",
+    description: "按编号（如 261013-1）获取一篇日记：转写正文 body、纸质原稿 pages 与富媒体 media（含下载链接）。",
     inputSchema: { id: z.string() },
     annotations: { readOnlyHint: true },
   }, async (a) => json(entryOut(store.getEntry(a.id))));
@@ -108,17 +120,21 @@ export function buildMcpServer(store: Store): McpServer {
     description: `新建一篇日记并分配编号，可同时把图库中的文件归入：media_ids 作为富媒体组，page_ids 作为纸质原稿。date 不传则为今天（服务器当前日期 ${todayStr()}）。`,
     inputSchema: {
       date: dateSchema.optional(), title: z.string().optional(),
-      note: z.string().optional().describe("文字备注（Markdown），可选"),
+      note: z.string().optional().describe("文字备注，可选"),
+      body: z.string().optional().describe(BODY_HELP),
       tags: z.array(z.string()).optional(),
       media_ids: z.array(z.string()).optional(), page_ids: z.array(z.string()).optional(),
     },
-  }, async (a) => json(entryOut(store.createEntry(a))));
+  }, async (a) => json(withRefCheck(store.createEntry(a))));
 
   server.registerTool("update_entry", {
     title: "修改日记",
-    description: "修改标题、备注或标签（只更新传入的字段；tags 为整体替换）。编号和日期不可修改。",
-    inputSchema: { id: z.string(), title: z.string().optional(), note: z.string().optional(), tags: z.array(z.string()).optional() },
-  }, async ({ id, ...patch }) => json(entryOut(store.updateEntry(id, patch))));
+    description: "修改标题、转写正文、备注或标签（只更新传入的字段；body、tags 为整体替换）。编号和日期不可修改。",
+    inputSchema: {
+      id: z.string(), title: z.string().optional(), body: z.string().optional().describe(BODY_HELP),
+      note: z.string().optional(), tags: z.array(z.string()).optional(),
+    },
+  }, async ({ id, ...patch }) => json(withRefCheck(store.updateEntry(id, patch))));
 
   server.registerTool("delete_entry", {
     title: "删除日记（移入回收站）",

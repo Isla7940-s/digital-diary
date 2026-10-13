@@ -23,6 +23,7 @@ const routes = [
   [/^\/unsorted$/, "library", () => import("./views/library.js"), { ungrouped: true }],
   [/^\/entries$/, "entries", () => import("./views/entries.js")],
   [/^\/e\/([^/]+)$/, "entries", () => import("./views/entry.js")],
+  [/^\/write\/([^/]+)$/, "entries", () => import("./views/write.js")],
   [/^\/read(?:\/([^/]+))?$/, "read", () => import("./views/reader.js")],
   [/^\/stats$/, "stats", () => import("./views/stats.js")],
   [/^\/scan$/, "scan", () => import("./views/scan.js")],
@@ -71,10 +72,16 @@ const currentTarget = () => uploadTarget || { label: "文件会放入图库「�
 installDrop(currentTarget);
 const doUpload = async () => {
   const files = await pickFiles({ accept: uploadTarget?.accept || "" });
-  if (files.length) uploadFiles(files, currentTarget());
+  if (!files.length) return;
+  if (uploadTarget?.onFiles) uploadTarget.onFiles(files);
+  else uploadFiles(files, currentTarget());
 };
 $("#sideUpload").addEventListener("click", doUpload);
 $("#mUpload").addEventListener("click", doUpload);
+
+// ---------- 手机：禁止整页双指缩放（iOS Safari 不认 user-scalable=no）；图像查看器有自己的缩放 ----------
+document.addEventListener("gesturestart", (e) => e.preventDefault());
+document.addEventListener("touchmove", (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
 // ---------- 搜索 ----------
 $("#sideSearch").addEventListener("submit", (e) => {
@@ -86,7 +93,7 @@ $("#sideSearch").addEventListener("submit", (e) => {
   e.target.q.blur();
 });
 addEventListener("keydown", (e) => {
-  if (e.key === "/" && !e.target.matches("input, textarea, select") && $("#viewer").hidden) {
+  if (e.key === "/" && !e.target.matches("input, textarea, select") && !e.target.isContentEditable && $("#viewer").hidden) {
     e.preventDefault();
     $("#sideSearch input").focus();
   }
@@ -116,6 +123,7 @@ async function router() {
   $("#sheetRoot").innerHTML = "";
   $("#selectBar").hidden = true;
   uploadTarget = null;
+  document.body.classList.remove("doc-mode", "entry-mode");
   const { path, query } = parseHash();
   for (const [re, key, load, extra] of routes) {
     const m = path.match(re);

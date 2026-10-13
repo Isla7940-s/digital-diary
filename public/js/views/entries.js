@@ -11,6 +11,7 @@ export function entryCard(e) {
     : e.cover ? `<div class="cover n1"><img loading="lazy" src="/thumbs/${e.cover.id}" alt=""></div>`
       : `<div class="cover none">${ICON.entries}</div>`;
   const s = [];
+  if (e.body_chars) s.push(`<span>${ICON.text}${fmtNum(e.body_chars)} 字</span>`);
   if (e.page_count) s.push(`<span>${ICON.page}${e.page_count} 页原稿</span>`);
   if (e.counts.image) s.push(`<span>${ICON.image}${e.counts.image}</span>`);
   if (e.counts.video) s.push(`<span>${ICON.video}${e.counts.video}</span>`);
@@ -20,6 +21,7 @@ export function entryCard(e) {
     <div class="body">
       <div class="top"><span class="idpill">${esc(e.id)}</span><span class="date">${fmtDate(e.date, false)} ${weekday(e.date)}</span></div>
       <div class="title ${e.title ? "" : "none"}">${esc(e.title || "未命名")}</div>
+      ${e.excerpt ? `<div class="excerpt">${esc(e.excerpt)}</div>` : ""}
       <div class="stats-line">${s.join("") || "<span>还没有内容</span>"}</div>
       ${e.tags.length ? `<div class="stats-line">${e.tags.map((t) => `<span class="tag">#${esc(t)}</span>`).join("")}</div>` : ""}
     </div></a>`;
@@ -33,7 +35,7 @@ export async function render({ app, query }) {
       <div class="actions"><button class="btn primary" id="enNew">${ICON.plus}新建日记</button></div>
     </div>
     <div class="toolbar">
-      <div class="search">${ICON.search}<input type="search" id="enQ" placeholder="编号、标题、标签、备注…" value="${esc(q)}"></div>
+      <div class="search">${ICON.search}<input type="search" id="enQ" placeholder="编号、标题、正文、标签…" value="${esc(q)}"></div>
       <select id="enMonth" style="width:auto" title="按月筛选"><option value="">全部月份</option></select>
       <span class="spacer"></span>
     </div>

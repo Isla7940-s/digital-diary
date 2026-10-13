@@ -12,7 +12,7 @@ export async function api(path, opts = {}) {
   }
   const res = await fetch(`/api${path}`, init);
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : await res.text();
-  if (!res.ok) throw Object.assign(new Error(data?.error || `请求失败 ${res.status}`), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(data?.error || `请求失败 ${res.status}`), { status: res.status, data });
   return data;
 }
 
@@ -102,6 +102,21 @@ export const ICON = {
   menu: I('<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>'),
   list: I('<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>'),
 };
+/** 一篇日记的两个页面：原稿与影像（详情）⇄ 文章（编辑），放在页面顶部切换 */
+export const entryTabs = (id, active) => `<nav class="seg entry-tabs">${[
+  ["e", "原稿 · 影像", ICON.library], ["write", "文章", ICON.entries],
+].map(([k, label, icon]) => `<a href="#/${k}/${encodeURIComponent(id)}" class="${k === active ? "on" : ""}">${icon}<span class="lb" data-t="${label}">${label}</span></a>`).join("")}</nav>`;
+
+/**
+ * 日记两个页面共用的顶栏：左侧（返回、编号、切换）完全一致，切换时不会跳动
+ * @param {{ state?: string, right?: string }} slots state 放在切换按钮后，right 放在最右侧
+ */
+export const entryHead = (id, active, { state = "", right = "" } = {}) => `<header class="doc-top">
+    <a class="icon-btn" href="#/entries" title="全部日记">${ICON.back}</a>
+    <nav class="crumb"><a href="#/entries">日记</a><span>/</span><b class="mono">${esc(id)}</b></nav>
+    ${entryTabs(id, active)}${state}<span class="grow"></span>${right}
+  </header>`;
+
 export const KIND_LABEL = { image: "照片", video: "视频", audio: "录音", text: "文字", file: "文件" };
 
 /** 由文件 id 生成稳定的「声波」图案，用于录音缩略图 */

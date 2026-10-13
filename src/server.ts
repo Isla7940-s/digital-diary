@@ -8,7 +8,7 @@ import QRCode from "qrcode";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config, paths } from "./config.js";
 import { openDb } from "./db.js";
-import { Store, NotFound, BadInput } from "./store.js";
+import { Store, NotFound, BadInput, Conflict } from "./store.js";
 import { storeFile } from "./media.js";
 import { exportZip } from "./export.js";
 import { buildMcpServer } from "./mcp.js";
@@ -52,7 +52,7 @@ export function createApp(store: Store) {
   api.get("/entries", (req, res) => {
     const q = req.query;
     res.json(store.listEntries({
-      from: str(q.from), to: str(q.to), tag: str(q.tag), q: str(q.q), hasPages: bool(q.pages),
+      from: str(q.from), to: str(q.to), tag: str(q.tag), q: str(q.q), hasPages: bool(q.pages), readable: bool(q.readable),
       limit: num(q.limit), offset: num(q.offset),
     }));
   });
@@ -144,6 +144,7 @@ export function createApp(store: Store) {
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof NotFound) return res.status(404).json({ error: err.message });
     if (err instanceof BadInput) return res.status(400).json({ error: err.message });
+    if (err instanceof Conflict) return res.status(409).json({ error: err.message, body: err.body });
     console.error(err);
     res.status(500).json({ error: err.message || "服务器错误" });
   });

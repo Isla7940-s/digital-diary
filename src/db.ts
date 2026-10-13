@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS entries (
   seq         INTEGER NOT NULL,
   title       TEXT NOT NULL DEFAULT '',
   note        TEXT NOT NULL DEFAULT '',
+  body        TEXT NOT NULL DEFAULT '',  -- 纸质日记的转写正文（Markdown），![说明](media:附件ID) 引用影像
   tags        TEXT NOT NULL DEFAULT '[]', -- JSON 数组
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
@@ -90,5 +91,8 @@ export function openDb(file = paths.db): DB {
   db.pragma("foreign_keys = ON");
   migrate(db);
   db.exec(SCHEMA);
+  // v2 → v3：日记增加转写正文
+  const entryCols = db.prepare("PRAGMA table_info(entries)").all() as { name: string }[];
+  if (!entryCols.some((c) => c.name === "body")) db.exec("ALTER TABLE entries ADD COLUMN body TEXT NOT NULL DEFAULT ''");
   return db;
 }

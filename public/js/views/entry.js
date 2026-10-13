@@ -1,5 +1,5 @@
-// 日记详情：编号与二维码、纸质原稿、富媒体组、备注
-import { $, api, esc, ICON, on, debounce, toast, emit, copy, confirmSheet, fmtDate, weekday, parseTags } from "../lib.js";
+// 日记详情（原稿与影像）：编号与二维码、纸质原稿、富媒体组、备注；顶部可切换到「文章」
+import { $, api, esc, entryHead, ICON, on, debounce, toast, emit, copy, confirmSheet, fmtDate, weekday, parseTags } from "../lib.js";
 import { createGallery } from "../gallery.js";
 import { openViewer } from "../viewer.js";
 import { uploadFiles, pickFiles } from "../upload.js";
@@ -18,9 +18,13 @@ export async function render({ app, params: [rawId] }) {
   const id = e.id;
   const trashed = !!e.deleted_at;
   setUploadTarget({ entryId: id, role: "media", label: `将加入 ${id} 的富媒体` });
+  document.body.classList.add("entry-mode");  // 与「文章」页共用顶栏布局，切换时不跳动
 
   app.innerHTML = `
-    <a class="back" href="#/entries">${ICON.back}全部日记</a>
+    ${entryHead(id, "e", {
+      right: `<a class="btn sm ghost" href="#/read/${encodeURIComponent(id)}">${ICON.book}<span>阅读</span></a>
+        <a class="btn sm ghost" href="#/print?ids=${encodeURIComponent(id)}">${ICON.print}<span>打印标签</span></a>`,
+    })}
     ${trashed ? `<div class="trash-banner"><span>这篇日记在回收站中，内容暂时隐藏。</span><button class="btn sm" id="enRestore">恢复</button></div>` : ""}
     <section class="card hero">
       <div style="min-width:0">
@@ -52,9 +56,10 @@ export async function render({ app, params: [rawId] }) {
     <div id="mdGal" style="--tile:150px"></div>
 
     <div class="section-title"><h2>${ICON.text}备注</h2></div>
-    <div class="card note-card"><textarea id="enNote" rows="4" placeholder="可选：补充说明、摘录…（纸质日记转写的文字以后会放在这里）" ${trashed ? "disabled" : ""}>${esc(e.note)}</textarea></div>
+    <div class="card note-card"><textarea id="enNote" rows="4" placeholder="可选：不属于正文的补充说明，例如写作背景、待补的内容…" ${trashed ? "disabled" : ""}>${esc(e.note)}</textarea></div>
 
     ${trashed ? "" : `<div style="display:flex;justify-content:flex-end;margin-top:28px"><button class="btn danger sm" id="enDelete">${ICON.trash}删除这篇日记</button></div>`}`;
+
 
   // ---------- 基本信息 ----------
   $("#copyId").addEventListener("click", () => copy(id));

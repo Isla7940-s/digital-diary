@@ -11,7 +11,14 @@ function entryMarkdown(e: EntryWithAttachments, pageFiles: string[], mediaFiles:
   const lines = [`# ${e.id}${e.title ? ` ${e.title}` : ""}`, "", `- 日期：${e.date}`];
   if (e.tags.length) lines.push(`- 标签：${e.tags.map((t) => `#${t}`).join(" ")}`);
   lines.push("");
-  if (e.note) lines.push(e.note, "");
+  if (e.body) {
+    // 正文里的 media:ID 换成 zip 内的相对路径，离线也能直接预览图文
+    const files = new Map<string, string>();
+    e.media.forEach((a, i) => files.set(a.id, `媒体/${mediaFiles[i]}`));
+    e.pages.forEach((a, i) => files.set(a.id, `原稿/${pageFiles[i]}`));
+    lines.push("## 正文", "", e.body.replace(/\]\(media:([\w-]+)\)/g, (m, id: string) => (files.has(id) ? `](${encodeURI(files.get(id)!)})` : m)), "");
+  }
+  if (e.note) lines.push("## 备注", "", e.note, "");
   const list = (title: string, dir: string, atts: Attachment[], files: string[]) => {
     if (!atts.length) return;
     lines.push(`## ${title}`, "");
