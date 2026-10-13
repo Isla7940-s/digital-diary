@@ -11,7 +11,7 @@ import { openDb } from "./db.js";
 import { Store, NotFound, BadInput } from "./store.js";
 import { storeFile } from "./media.js";
 import { exportZip } from "./export.js";
-import { buildMcpServer, withUrls } from "./mcp.js";
+import { buildMcpServer } from "./mcp.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -45,9 +45,16 @@ export function createApp(store: Store) {
   const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
   const num = (v: unknown) => (v !== undefined && v !== "" ? Number(v) : undefined);
 
+  const ids = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
+  const bool = (v: unknown) => v === "1" || v === "true";
+
+  // 日记
   api.get("/entries", (req, res) => {
     const q = req.query;
-    res.json(store.listEntries({ from: str(q.from), to: str(q.to), tag: str(q.tag), q: str(q.q), limit: num(q.limit), offset: num(q.offset) }));
+    res.json(store.listEntries({
+      from: str(q.from), to: str(q.to), tag: str(q.tag), q: str(q.q), hasPages: bool(q.pages),
+      limit: num(q.limit), offset: num(q.offset),
+    }));
   });
   api.post("/entries", (req, res) => res.status(201).json(store.createEntry(req.body ?? {})));
   api.get("/entries/:id", (req, res) => res.json(store.getEntry(req.params.id, { includeDeleted: true })));
@@ -55,32 +62,47 @@ export function createApp(store: Store) {
   api.delete("/entries/:id", (req, res) => res.json(store.trashEntry(req.params.id)));
   api.post("/entries/:id/restore", (req, res) => res.json(store.restoreEntry(req.params.id)));
   api.delete("/entries/:id/purge", (req, res) => res.json(store.purgeEntry(req.params.id)));
-  api.put("/entries/:id/order", (req, res) => res.json(store.reorderAttachments(req.params.id, req.body?.ids ?? [])));
+  api.put("/entries/:id/order", (req, res) => res.json(store.reorder(req.params.id, ids(req.body?.ids))));
 
-  api.post("/entries/:id/attachments", upload.array("files"), async (req, res) => {
+  // 图库
+  api.get("/media", (req, res) => {
+    const q = req.query;
+    res.json(store.listMedia({
+      kind: str(q.kind) as never, role: str(q.role) as never, entry: str(q.entry), ungrouped: bool(q.ungrouped),
+      q: str(q.q), from: str(q.from), to: str(q.to), limit: num(q.limit), offset: num(q.offset),
+    }));
+  });
+  api.get("/media/:id", (req, res) => res.json(store.getAttachment(req.params.id, true)));
+  // 上传：可附带 entry_id / role；lastModified 为客户端文件修改时间（毫秒），无 EXIF 时作为拍摄时间
+  api.post("/media", upload.array("files"), async (req, res) => {
     const files = (req.files as Express.Multer.File[]) ?? [];
+    const entryId = str(req.body?.entry_id);
+    const role = req.body?.role === "page" ? "page" : "media";
     try {
-      store.getEntry(req.params.id as string);
+      if (entryId) store.getEntry(entryId);
     } catch (e) {
       files.forEach((f) => fs.rmSync(f.path, { force: true }));
       throw e;
     }
+    const mtimes = ([] as unknown[]).concat(req.body?.lastModified ?? []).map(Number);
     const out = [];
-    for (const f of files) {
-      const stored = await storeFile(f.path, f.originalname, f.mimetype);
-      out.push(withUrls(store.addAttachment(req.params.id as string, stored, f.originalname, "")));
+    for (const [i, f] of files.entries()) {
+      const stored = await storeFile(f.path, f.originalname, f.mimetype, mtimes[i] ? new Date(mtimes[i]) : undefined);
+      out.push(store.addAttachment(stored, f.originalname, { entryId, role }));
     }
     res.status(201).json(out);
   });
-
-  api.patch("/attachments/:id", (req, res) => res.json(store.updateAttachment(req.params.id, req.body ?? {})));
-  api.delete("/attachments/:id", (req, res) => res.json(store.trashAttachment(req.params.id)));
-  api.post("/attachments/:id/restore", (req, res) => res.json(store.restoreAttachment(req.params.id)));
-  api.delete("/attachments/:id/purge", (req, res) => res.json(store.purgeAttachment(req.params.id)));
+  api.post("/media/assign", (req, res) => res.json(store.assign(ids(req.body?.ids), String(req.body?.entry_id ?? ""), req.body?.role === "page" ? "page" : "media")));
+  api.post("/media/unassign", (req, res) => res.json(store.unassign(ids(req.body?.ids))));
+  api.post("/media/trash", (req, res) => res.json(store.trashAttachments(ids(req.body?.ids))));
+  api.patch("/media/:id", (req, res) => res.json(store.updateAttachment(req.params.id, req.body ?? {})));
+  api.post("/media/:id/restore", (req, res) => res.json(store.restoreAttachment(req.params.id)));
+  api.delete("/media/:id/purge", (req, res) => res.json(store.purgeAttachment(req.params.id)));
 
   api.get("/trash", (_req, res) => res.json(store.listTrash()));
   api.delete("/trash", (_req, res) => res.json(store.emptyTrash()));
   api.get("/tags", (_req, res) => res.json(store.listTags()));
+  api.get("/counts", (_req, res) => res.json(store.counts()));
   api.get("/stats", (_req, res) => res.json(store.stats()));
 
   // 二维码只包含编号本身

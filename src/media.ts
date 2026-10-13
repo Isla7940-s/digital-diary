@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import sharp from "sharp";
+import exifr from "exifr";
 import { paths } from "./config.js";
 
 export type Kind = "image" | "audio" | "video" | "text" | "file";
@@ -57,6 +58,49 @@ function ffmpegFrame(file: string, at: number): Promise<Buffer> {
   });
 }
 
+/** 本地时间 YYYY-MM-DDTHH:mm:ss（按容器 TZ），图库按天分组用 */
+export function localIso(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+interface Probe { duration: number | null; width: number | null; height: number | null; created: Date | null }
+
+function ffprobe(file: string): Promise<Probe> {
+  return new Promise((resolve) => {
+    const p = spawn("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file]);
+    let out = "";
+    p.stdout.on("data", (c) => (out += c));
+    p.on("error", () => resolve({ duration: null, width: null, height: null, created: null }));
+    p.on("close", () => {
+      try {
+        const j = JSON.parse(out);
+        const v = (j.streams ?? []).find((s: { codec_type: string }) => s.codec_type === "video");
+        const tag = j.format?.tags?.creation_time ?? v?.tags?.creation_time;
+        const created = tag ? new Date(tag) : null;
+        // 旋转 90° 的手机视频需要交换宽高
+        const rot = Math.abs(Number(v?.tags?.rotate ?? v?.side_data_list?.find((d: { rotation?: number }) => d.rotation !== undefined)?.rotation ?? 0));
+        const swap = rot === 90 || rot === 270;
+        resolve({
+          duration: Number(j.format?.duration) || null,
+          width: (swap ? v?.height : v?.width) ?? null,
+          height: (swap ? v?.width : v?.height) ?? null,
+          // 很多设备在没有时间时写入 1970/1904
+          created: created && !isNaN(created.getTime()) && created.getFullYear() > 1990 ? created : null,
+        });
+      } catch { resolve({ duration: null, width: null, height: null, created: null }); }
+    });
+  });
+}
+
+async function exifTime(file: string): Promise<Date | null> {
+  try {
+    const t = await exifr.parse(file, ["DateTimeOriginal", "CreateDate"]);
+    const d: unknown = t?.DateTimeOriginal ?? t?.CreateDate;
+    return d instanceof Date && !isNaN(d.getTime()) && d.getFullYear() > 1990 ? d : null;
+  } catch { return null; }
+}
+
 interface ThumbResult { thumb: string | null; width: number | null; height: number | null }
 
 async function makeThumb(id: string, file: string, kind: Kind): Promise<ThumbResult> {
@@ -81,10 +125,14 @@ async function makeThumb(id: string, file: string, kind: Kind): Promise<ThumbRes
 export interface StoredFile {
   id: string; kind: Kind; mime: string; size: number; sha256: string;
   path: string; thumb: string | null; width: number | null; height: number | null;
+  duration: number | null; taken_at: string;
 }
 
-/** 把临时文件移入媒体库并生成缩略图。原文件只写一次，之后不会被修改。 */
-export async function storeFile(tmpFile: string, originalName: string, givenMime?: string): Promise<StoredFile> {
+/**
+ * 把临时文件移入媒体库，生成缩略图并读取拍摄时间、时长。原文件只写一次，之后不会被修改。
+ * 拍摄时间优先级：EXIF / 视频元数据 > 客户端提供的文件修改时间 > 上传时间
+ */
+export async function storeFile(tmpFile: string, originalName: string, givenMime?: string, fileTime?: Date): Promise<StoredFile> {
   const id = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
   const mime = resolveMime(originalName, givenMime);
   const kind = kindOf(mime);
@@ -103,7 +151,16 @@ export async function storeFile(tmpFile: string, originalName: string, givenMime
   try { t = await makeThumb(id, dest, kind); } catch (e) {
     console.warn(`缩略图生成失败 ${originalName}: ${(e as Error).message}`);
   }
-  return { id, kind, mime, size, sha256, path: rel, ...t };
+  let duration: number | null = null, taken: Date | null = null;
+  if (kind === "image") taken = await exifTime(dest);
+  else if (kind === "video" || kind === "audio") {
+    const pr = await ffprobe(dest);
+    duration = pr.duration;
+    taken = pr.created;
+    if (kind === "video" && pr.width && pr.height) { t.width = pr.width; t.height = pr.height; }
+  }
+  const fallback = fileTime && !isNaN(fileTime.getTime()) && fileTime.getFullYear() > 1990 ? fileTime : now;
+  return { id, kind, mime, size, sha256, path: rel, ...t, duration, taken_at: localIso(taken ?? fallback) };
 }
 
 export function tmpPath(): string {

@@ -3,64 +3,53 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#F7EDCB">
+  <meta name="theme-color" content="#F5EBC9">
   <title>数字日记</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='3' width='22' height='26' rx='3' fill='%23F3DB8E' stroke='%238A5A0B' stroke-width='2'/%3E%3Cpath d='M10 10h12M10 15h12M10 20h7' stroke='%238A5A0B' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='3' width='22' height='26' rx='4' fill='%23F3D88A' stroke='%237A4F06' stroke-width='2'/%3E%3Cpath d='M10 10h12M10 15h12M10 20h7' stroke='%237A4F06' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="#/">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="3" width="22" height="26" rx="3"/><path d="M10 10h12M10 15h12M10 20h7"/></svg>
-      <span>数字日记</span>
-    </a>
-    <nav class="nav">
-      <a href="#/scan" class="nav-btn" title="扫码 / 输入编号">
-        <svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16"/></svg>
-        <span>扫码</span>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#/">
+        <span class="brand-mark"><svg viewBox="0 0 32 32"><rect x="5" y="3" width="22" height="26" rx="4"/><path d="M10 10h12M10 15h12M10 20h7"/></svg></span>
+        <span class="brand-text"><b>数字日记</b><small>纸与影像的索引</small></span>
       </a>
-      <a href="#/trash" class="nav-btn" title="回收站">
-        <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
-        <span>回收站</span>
-      </a>
-      <a href="#/more" class="nav-btn" title="导出与设置">
-        <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
-        <span>更多</span>
-      </a>
-      <button class="btn primary" id="newBtn">
-        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-        <span>新建</span>
+      <form class="side-search" id="sideSearch">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+        <input type="search" name="q" placeholder="搜索或输入编号" autocomplete="off">
+        <kbd>/</kbd>
+      </form>
+      <button class="btn primary block" id="sideUpload">
+        <svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>上传到图库
       </button>
-    </nav>
-  </header>
+      <nav class="side-nav" id="sideNav"></nav>
+      <div class="side-foot" id="sideFoot"></div>
+    </aside>
 
-  <main id="app" class="container"></main>
+    <div class="main-col">
+      <header class="mobile-top" id="mobileTop">
+        <a class="brand" href="#/"><span class="brand-mark"><svg viewBox="0 0 32 32"><rect x="5" y="3" width="22" height="26" rx="4"/><path d="M10 10h12M10 15h12M10 20h7"/></svg></span><b id="mobileTitle">数字日记</b></a>
+        <div class="mobile-actions">
+          <button class="icon-btn" id="mUpload" aria-label="上传"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg></button>
+          <button class="icon-btn" id="mMore" aria-label="更多"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button>
+        </div>
+      </header>
+      <main id="app" class="main"></main>
+    </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
-
-  <dialog id="newDialog" class="dialog">
-    <form method="dialog" id="newForm">
-      <h2>新建日记</h2>
-      <p class="hint">新建后会得到一个编号，写在纸质本上或贴上二维码即可关联。</p>
-      <label>日期<input type="date" name="date" required></label>
-      <label>标题 <small>（可选）</small><input type="text" name="title" placeholder="例如：秋天的第一场雨" maxlength="200"></label>
-      <label>标签 <small>（空格或逗号分隔，可选）</small><input type="text" name="tags" placeholder="旅行 家人"></label>
-      <div class="dialog-actions">
-        <button type="button" class="btn" value="cancel" data-close>取消</button>
-        <button type="submit" class="btn primary" value="ok">创建</button>
-      </div>
-    </form>
-  </dialog>
-
-  <div id="lightbox" class="lightbox" hidden>
-    <button class="lb-close" aria-label="关闭">×</button>
-    <button class="lb-prev" aria-label="上一个">‹</button>
-    <div class="lb-stage"></div>
-    <button class="lb-next" aria-label="下一个">›</button>
-    <div class="lb-caption"></div>
+    <nav class="tabbar" id="tabbar"></nav>
   </div>
 
+  <input type="file" id="globalFile" multiple hidden>
+  <div id="uploadPanel" class="upload-panel" hidden></div>
+  <div id="selectBar" class="select-bar" hidden></div>
+  <div id="dropOverlay" class="drop-overlay" hidden><div><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg><b>松开即可上传</b><span id="dropHint">文件会放入图库</span></div></div>
+  <div id="viewer" class="viewer" hidden></div>
+  <div id="sheetRoot"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
   <script src="vendor/jsQR.js" defer></script>
-  <script src="app.js" type="module"></script>
+  <script src="js/main.js" type="module"></script>
 </body>
 </html>

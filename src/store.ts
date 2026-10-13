@@ -2,12 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DB } from "./db.js";
 import { paths } from "./config.js";
-import { removeStored, type StoredFile, type Kind } from "./media.js";
+import { localIso, removeStored, type StoredFile, type Kind } from "./media.js";
+
+export type Role = "media" | "page";
 
 export interface Attachment {
-  id: string; entry_id: string; kind: Kind; original_name: string; mime: string; size: number;
+  id: string; entry_id: string | null; role: Role; kind: Kind; original_name: string; mime: string; size: number;
   sha256: string; path: string; thumb: string | null; width: number | null; height: number | null;
-  caption: string; position: number; created_at: string; deleted_at: string | null;
+  duration: number | null; taken_at: string; caption: string; position: number; created_at: string; deleted_at: string | null;
 }
 
 export interface Entry {
@@ -15,17 +17,20 @@ export interface Entry {
   created_at: string; updated_at: string; deleted_at: string | null;
 }
 
-export interface EntryWithAttachments extends Entry { attachments: Attachment[] }
-export interface EntrySummary extends Entry { attachment_count: number; counts: Record<Kind, number>; preview: Attachment[] }
+export interface EntryWithAttachments extends Entry { pages: Attachment[]; media: Attachment[] }
+export interface EntrySummary extends Entry {
+  counts: Record<Kind, number>; media_count: number; page_count: number;
+  cover: Attachment | null; preview: Attachment[];
+}
 
 export class NotFound extends Error {}
 export class BadInput extends Error {}
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const ID_RE = /^\d{6}-\d+$/;
+const KINDS: Kind[] = ["image", "video", "audio", "text", "file"];
 
 export function todayStr(d = new Date()): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return localIso(d).slice(0, 10);
 }
 
 /** 2026-10-13 + 1 → 261013-1 */
@@ -55,16 +60,26 @@ function cleanTags(tags: unknown): string[] {
 }
 
 const nowIso = () => new Date().toISOString();
+const likeArg = (t: string) => `%${t.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
 
 type Row = Omit<Entry, "tags"> & { tags: string };
 const rowToEntry = (r: Row): Entry => ({ ...r, tags: JSON.parse(r.tags) });
+
+/** 「可见」的附件：自身未删除，且不属于回收站中的日记 */
+const VISIBLE = "a.deleted_at IS NULL AND (a.entry_id IS NULL OR a.entry_id IN (SELECT id FROM entries WHERE deleted_at IS NULL))";
+
+export interface MediaQuery {
+  kind?: Kind | "visual"; role?: Role | "all"; entry?: string; ungrouped?: boolean;
+  q?: string; from?: string; to?: string; limit?: number; offset?: number;
+}
 
 export class Store {
   constructor(private db: DB) {}
 
   // ---------- 日记 ----------
 
-  createEntry(input: { date?: string; title?: string; note?: string; tags?: string[] } = {}): EntryWithAttachments {
+  /** 新建日记并分配编号；可同时把图库中已选的媒体归入这篇日记 */
+  createEntry(input: { date?: string; title?: string; note?: string; tags?: string[]; media_ids?: string[]; page_ids?: string[] } = {}): EntryWithAttachments {
     const date = input.date ?? todayStr();
     if (!validDate(date)) throw new BadInput(`日期格式应为 YYYY-MM-DD：${date}`);
     const id = this.db.transaction(() => {
@@ -75,6 +90,8 @@ export class Store {
       const now = nowIso();
       this.db.prepare(`INSERT INTO entries(id, date, seq, title, note, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
         .run(id, date, seq, (input.title ?? "").trim(), input.note ?? "", JSON.stringify(cleanTags(input.tags)), now, now);
+      if (input.media_ids?.length) this.assign(input.media_ids, id, "media");
+      if (input.page_ids?.length) this.assign(input.page_ids, id, "page");
       this.refreshFts(id);
       return id;
     })();
@@ -90,24 +107,24 @@ export class Store {
   getEntry(id: string, opts: { includeDeleted?: boolean } = {}): EntryWithAttachments {
     const e = this.entryRow(id, opts.includeDeleted);
     const atts = this.db.prepare(
-      `SELECT * FROM attachments WHERE entry_id = ? ${opts.includeDeleted ? "" : "AND deleted_at IS NULL"} ORDER BY position, created_at`,
+      "SELECT * FROM attachments WHERE entry_id = ? AND deleted_at IS NULL ORDER BY position, taken_at",
     ).all(e.id) as Attachment[];
-    return { ...e, attachments: atts };
+    return { ...e, pages: atts.filter((a) => a.role === "page"), media: atts.filter((a) => a.role === "media") };
   }
 
-  listEntries(opts: { from?: string; to?: string; tag?: string; q?: string; limit?: number; offset?: number } = {}) {
+  listEntries(opts: { from?: string; to?: string; tag?: string; q?: string; hasPages?: boolean; limit?: number; offset?: number } = {}) {
     const where = ["e.deleted_at IS NULL"];
     const args: unknown[] = [];
     if (opts.from) { where.push("e.date >= ?"); args.push(opts.from); }
     if (opts.to) { where.push("e.date <= ?"); args.push(opts.to); }
     if (opts.tag) { where.push("EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)"); args.push(opts.tag); }
-    const terms = (opts.q ?? "").split(/\s+/).filter(Boolean);
-    for (const t of terms) {
+    if (opts.hasPages) where.push("EXISTS (SELECT 1 FROM attachments a WHERE a.entry_id = e.id AND a.role = 'page' AND a.deleted_at IS NULL)");
+    for (const t of (opts.q ?? "").split(/\s+/).filter(Boolean)) {
       where.push("e.id IN (SELECT id FROM entries_fts WHERE body LIKE ? ESCAPE '\\')");
-      args.push(`%${t.replace(/[\\%_]/g, (c) => "\\" + c)}%`);
+      args.push(likeArg(t));
     }
     const sqlWhere = where.join(" AND ");
-    const limit = Math.min(Math.max(opts.limit ?? 30, 1), 200);
+    const limit = Math.min(Math.max(opts.limit ?? 30, 1), 500);
     const offset = Math.max(opts.offset ?? 0, 0);
     const total = (this.db.prepare(`SELECT COUNT(*) n FROM entries e WHERE ${sqlWhere}`).get(...args) as { n: number }).n;
     const rows = this.db.prepare(`SELECT e.* FROM entries e WHERE ${sqlWhere} ORDER BY e.date DESC, e.seq DESC LIMIT ? OFFSET ?`)
@@ -116,11 +133,18 @@ export class Store {
   }
 
   private summarize(e: Entry): EntrySummary {
-    const atts = this.db.prepare("SELECT * FROM attachments WHERE entry_id = ? AND deleted_at IS NULL ORDER BY position, created_at")
+    const atts = this.db.prepare("SELECT * FROM attachments WHERE entry_id = ? AND deleted_at IS NULL ORDER BY position, taken_at")
       .all(e.id) as Attachment[];
-    const counts = { image: 0, audio: 0, video: 0, text: 0, file: 0 } as Record<Kind, number>;
-    for (const a of atts) counts[a.kind]++;
-    return { ...e, attachment_count: atts.length, counts, preview: atts.filter((a) => a.thumb).slice(0, 6) };
+    const media = atts.filter((a) => a.role === "media");
+    const pages = atts.filter((a) => a.role === "page");
+    const counts = Object.fromEntries(KINDS.map((k) => [k, 0])) as Record<Kind, number>;
+    for (const a of media) counts[a.kind]++;
+    const visual = media.filter((a) => a.thumb);
+    return {
+      ...e, counts, media_count: media.length, page_count: pages.length,
+      cover: visual[0] ?? pages.find((a) => a.thumb) ?? null,
+      preview: visual.slice(0, 8),
+    };
   }
 
   updateEntry(id: string, patch: { title?: string; note?: string; tags?: string[] }): EntryWithAttachments {
@@ -136,7 +160,7 @@ export class Store {
     return this.getEntry(e.id);
   }
 
-  /** 移入回收站（附件随日记一起隐藏，恢复时一并恢复） */
+  /** 移入回收站（其中的媒体与原稿一并隐藏，恢复时一并恢复） */
   trashEntry(id: string) {
     const e = this.entryRow(id);
     this.db.prepare("UPDATE entries SET deleted_at = ? WHERE id = ?").run(nowIso(), e.id);
@@ -163,61 +187,128 @@ export class Store {
     return { id: e.id, purged: true };
   }
 
-  // ---------- 附件 ----------
+  // ---------- 图库 / 附件 ----------
 
-  addAttachment(entryId: string, f: StoredFile, originalName: string, caption = ""): Attachment {
-    const e = this.entryRow(entryId);
-    const pos = (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 p FROM attachments WHERE entry_id = ?").get(e.id) as { p: number }).p;
-    this.db.prepare(`INSERT INTO attachments(id, entry_id, kind, original_name, mime, size, sha256, path, thumb, width, height, caption, position, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(f.id, e.id, f.kind, originalName, f.mime, f.size, f.sha256, f.path, f.thumb, f.width, f.height, caption.trim(), pos, nowIso());
-    this.touch(e.id);
+  addAttachment(f: StoredFile, originalName: string, opts: { entryId?: string | null; role?: Role; caption?: string } = {}): Attachment {
+    const entryId = opts.entryId ? this.entryRow(opts.entryId).id : null;
+    const role: Role = entryId && opts.role === "page" ? "page" : "media";
+    const pos = entryId ? this.nextPosition(entryId, role) : 0;
+    this.db.prepare(`INSERT INTO attachments(id, entry_id, role, kind, original_name, mime, size, sha256, path, thumb, width, height, duration, taken_at, caption, position, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(f.id, entryId, role, f.kind, originalName, f.mime, f.size, f.sha256, f.path, f.thumb, f.width, f.height, f.duration, f.taken_at, (opts.caption ?? "").trim(), pos, nowIso());
+    if (entryId) this.touch(entryId);
     return this.getAttachment(f.id);
+  }
+
+  private nextPosition(entryId: string, role: Role): number {
+    return (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 p FROM attachments WHERE entry_id = ? AND role = ?").get(entryId, role) as { p: number }).p;
   }
 
   getAttachment(id: string, includeDeleted = false): Attachment {
     const a = this.db.prepare("SELECT * FROM attachments WHERE id = ?").get(id) as Attachment | undefined;
-    if (!a || (!includeDeleted && a.deleted_at)) throw new NotFound(`找不到附件 ${id}`);
+    if (!a || (!includeDeleted && a.deleted_at)) throw new NotFound(`找不到文件 ${id}`);
     return a;
   }
 
-  updateAttachment(id: string, patch: { caption?: string; entry_id?: string; position?: number }): Attachment {
+  /** 图库查询：按拍摄时间倒序 */
+  listMedia(q: MediaQuery = {}) {
+    const where = [VISIBLE];
+    const args: unknown[] = [];
+    if (q.kind === "visual") where.push("a.kind IN ('image','video')");
+    else if (q.kind) { where.push("a.kind = ?"); args.push(q.kind); }
+    if (q.role !== "all") { where.push("a.role = ?"); args.push(q.role ?? "media"); }
+    if (q.entry) { where.push("a.entry_id = ?"); args.push(normalizeId(q.entry)); }
+    if (q.ungrouped) where.push("a.entry_id IS NULL");
+    if (q.from) { where.push("a.taken_at >= ?"); args.push(q.from); }
+    if (q.to) { where.push("a.taken_at < ?"); args.push(`${q.to}T99`); }
+    for (const t of (q.q ?? "").split(/\s+/).filter(Boolean)) {
+      where.push("(a.original_name LIKE ? ESCAPE '\\' OR a.caption LIKE ? ESCAPE '\\' OR a.entry_id LIKE ? ESCAPE '\\')");
+      args.push(likeArg(t), likeArg(t), likeArg(t));
+    }
+    const w = where.join(" AND ");
+    const limit = Math.min(Math.max(q.limit ?? 120, 1), 500);
+    const offset = Math.max(q.offset ?? 0, 0);
+    const total = (this.db.prepare(`SELECT COUNT(*) n FROM attachments a WHERE ${w}`).get(...args) as { n: number }).n;
+    const items = this.db.prepare(`SELECT a.* FROM attachments a WHERE ${w} ORDER BY a.taken_at DESC, a.created_at DESC LIMIT ? OFFSET ?`)
+      .all(...args, limit, offset) as Attachment[];
+    return { total, limit, offset, items };
+  }
+
+  /** 把一批文件归入某篇日记（作为富媒体或纸质原稿），追加到末尾 */
+  assign(ids: string[], entryId: string, role: Role = "media") {
+    const e = this.entryRow(entryId);
+    const stmt = this.db.prepare("UPDATE attachments SET entry_id = ?, role = ?, position = ? WHERE id = ?");
+    const touched = new Set<string>([e.id]);
+    this.db.transaction(() => {
+      let pos = this.nextPosition(e.id, role);
+      for (const id of ids) {
+        const a = this.getAttachment(id);
+        if (a.entry_id === e.id && a.role === role) continue;
+        if (a.entry_id) touched.add(a.entry_id);
+        stmt.run(e.id, role, pos++, a.id);
+      }
+    })();
+    touched.forEach((t) => this.touch(t));
+    return this.getEntry(e.id);
+  }
+
+  /** 移出日记，回到图库的「未归组」 */
+  unassign(ids: string[]) {
+    const touched = new Set<string>();
+    const stmt = this.db.prepare("UPDATE attachments SET entry_id = NULL, role = 'media', position = 0 WHERE id = ?");
+    this.db.transaction(() => {
+      for (const id of ids) {
+        const a = this.getAttachment(id);
+        if (a.entry_id) touched.add(a.entry_id);
+        stmt.run(a.id);
+      }
+    })();
+    touched.forEach((t) => this.touch(t));
+    return { ids, unassigned: true };
+  }
+
+  updateAttachment(id: string, patch: { caption?: string; position?: number }): Attachment {
     const a = this.getAttachment(id);
-    const entryId = patch.entry_id !== undefined ? this.entryRow(patch.entry_id).id : a.entry_id;
-    this.db.prepare("UPDATE attachments SET caption = ?, entry_id = ?, position = ? WHERE id = ?")
-      .run(patch.caption !== undefined ? patch.caption.trim() : a.caption, entryId, patch.position ?? a.position, a.id);
-    this.touch(entryId);
-    if (entryId !== a.entry_id) this.touch(a.entry_id);
+    this.db.prepare("UPDATE attachments SET caption = ?, position = ? WHERE id = ?")
+      .run(patch.caption !== undefined ? patch.caption.trim() : a.caption, patch.position ?? a.position, a.id);
+    if (a.entry_id) this.touch(a.entry_id);
     return this.getAttachment(a.id);
   }
 
-  reorderAttachments(entryId: string, ids: string[]) {
+  reorder(entryId: string, ids: string[]) {
     const e = this.entryRow(entryId);
     const stmt = this.db.prepare("UPDATE attachments SET position = ? WHERE id = ? AND entry_id = ?");
     this.db.transaction(() => ids.forEach((id, i) => stmt.run(i, id, e.id)))();
     return this.getEntry(e.id);
   }
 
-  trashAttachment(id: string) {
-    const a = this.getAttachment(id);
-    this.db.prepare("UPDATE attachments SET deleted_at = ? WHERE id = ?").run(nowIso(), a.id);
-    this.touch(a.entry_id);
-    return { id: a.id, trashed: true };
+  trashAttachments(ids: string[]) {
+    const stmt = this.db.prepare("UPDATE attachments SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL");
+    const touched = new Set<string>();
+    this.db.transaction(() => {
+      for (const id of ids) {
+        const a = this.getAttachment(id);
+        stmt.run(nowIso(), a.id);
+        if (a.entry_id) touched.add(a.entry_id);
+      }
+    })();
+    touched.forEach((t) => this.touch(t));
+    return { ids, trashed: true };
   }
 
   restoreAttachment(id: string) {
     const a = this.getAttachment(id, true);
     this.db.prepare("UPDATE attachments SET deleted_at = NULL WHERE id = ?").run(a.id);
-    this.touch(a.entry_id);
+    if (a.entry_id) this.touch(a.entry_id);
     return this.getAttachment(a.id);
   }
 
   purgeAttachment(id: string) {
     const a = this.getAttachment(id, true);
-    if (!a.deleted_at) throw new BadInput("只能永久删除回收站中的附件");
+    if (!a.deleted_at) throw new BadInput("只能永久删除回收站中的文件");
     this.db.prepare("DELETE FROM attachments WHERE id = ?").run(a.id);
     this.removeFileIfUnused(a);
-    this.refreshFts(a.entry_id);
+    if (a.entry_id) this.refreshFts(a.entry_id);
     return { id: a.id, purged: true };
   }
 
@@ -226,13 +317,13 @@ export class Store {
     if (!used) removeStored(a.path, a.thumb);
   }
 
-  // ---------- 回收站 / 标签 / 统计 ----------
+  // ---------- 回收站 / 标签 ----------
 
   listTrash() {
     const entries = (this.db.prepare("SELECT * FROM entries WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").all() as Row[]).map(rowToEntry);
     const attachments = this.db.prepare(
-      `SELECT a.* FROM attachments a JOIN entries e ON e.id = a.entry_id
-       WHERE a.deleted_at IS NOT NULL AND e.deleted_at IS NULL ORDER BY a.deleted_at DESC`,
+      `SELECT a.* FROM attachments a WHERE a.deleted_at IS NOT NULL
+       AND (a.entry_id IS NULL OR a.entry_id IN (SELECT id FROM entries WHERE deleted_at IS NULL)) ORDER BY a.deleted_at DESC`,
     ).all() as Attachment[];
     return { entries, attachments };
   }
@@ -251,20 +342,68 @@ export class Store {
     ).all() as { tag: string; count: number }[];
   }
 
-  stats() {
-    const q = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
-    return {
-      entries: q("SELECT COUNT(*) n FROM entries WHERE deleted_at IS NULL"),
-      attachments: q("SELECT COUNT(*) n FROM attachments a JOIN entries e ON e.id = a.entry_id WHERE a.deleted_at IS NULL AND e.deleted_at IS NULL"),
-      bytes: q("SELECT COALESCE(SUM(a.size),0) n FROM attachments a JOIN entries e ON e.id = a.entry_id WHERE a.deleted_at IS NULL AND e.deleted_at IS NULL"),
-      trash: q("SELECT COUNT(*) n FROM entries WHERE deleted_at IS NOT NULL") + q("SELECT COUNT(*) n FROM attachments WHERE deleted_at IS NOT NULL"),
-    };
-  }
-
-  /** 导出用：全部未删除日记及其附件 */
   allEntries(): EntryWithAttachments[] {
     const rows = this.db.prepare("SELECT * FROM entries WHERE deleted_at IS NULL ORDER BY date, seq").all() as Row[];
     return rows.map((r) => this.getEntry(r.id));
+  }
+
+  // ---------- 统计 ----------
+
+  logMcpCall(tool: string, ok: boolean, ms: number) {
+    this.db.prepare("INSERT INTO mcp_calls(ts, tool, ok, ms) VALUES (?,?,?,?)").run(localIso(), tool, ok ? 1 : 0, Math.round(ms));
+  }
+
+  /** 侧边栏用的轻量计数 */
+  counts() {
+    const n = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
+    return {
+      media: n(`SELECT COUNT(*) n FROM attachments a WHERE ${VISIBLE} AND a.role = 'media'`),
+      ungrouped: n(`SELECT COUNT(*) n FROM attachments a WHERE ${VISIBLE} AND a.entry_id IS NULL`),
+      entries: n("SELECT COUNT(*) n FROM entries WHERE deleted_at IS NULL"),
+      pages: n(`SELECT COUNT(*) n FROM attachments a WHERE ${VISIBLE} AND a.role = 'page'`),
+      trash: n("SELECT COUNT(*) n FROM entries WHERE deleted_at IS NOT NULL")
+        + n("SELECT COUNT(*) n FROM attachments a WHERE a.deleted_at IS NOT NULL AND (a.entry_id IS NULL OR a.entry_id IN (SELECT id FROM entries WHERE deleted_at IS NULL))"),
+    };
+  }
+
+  stats(days = 371) {
+    const since = todayStr(new Date(Date.now() - days * 86400000));
+    const all = <T>(sql: string, ...a: unknown[]) => this.db.prepare(sql).all(...a) as T[];
+    const kinds = all<{ kind: Kind; count: number; bytes: number; seconds: number }>(
+      `SELECT a.kind, COUNT(*) count, SUM(a.size) bytes, COALESCE(SUM(a.duration), 0) seconds FROM attachments a
+       WHERE ${VISIBLE} AND a.role = 'media' GROUP BY a.kind`);
+    const pages = all<{ count: number; bytes: number }>(`SELECT COUNT(*) count, COALESCE(SUM(a.size),0) bytes FROM attachments a WHERE ${VISIBLE} AND a.role = 'page'`)[0];
+    const entryDays = all<{ day: string; count: number }>(
+      "SELECT date day, COUNT(*) count FROM entries WHERE deleted_at IS NULL AND date >= ? GROUP BY date", since);
+    const mediaDays = all<{ day: string; count: number }>(
+      `SELECT substr(a.taken_at,1,10) day, COUNT(*) count FROM attachments a WHERE ${VISIBLE} AND a.role = 'media' AND a.taken_at >= ? GROUP BY day`, since);
+    const mcpDays = all<{ day: string; count: number; errors: number }>(
+      "SELECT substr(ts,1,10) day, COUNT(*) count, SUM(1 - ok) errors FROM mcp_calls WHERE ts >= ? GROUP BY day", since);
+    const mcpTools = all<{ tool: string; count: number; errors: number; avg_ms: number }>(
+      "SELECT tool, COUNT(*) count, SUM(1 - ok) errors, CAST(AVG(ms) AS INTEGER) avg_ms FROM mcp_calls WHERE ts >= ? GROUP BY tool ORDER BY count DESC", since);
+    const mcpHours = all<{ hour: number; count: number }>(
+      "SELECT CAST(substr(ts,12,2) AS INTEGER) hour, COUNT(*) count FROM mcp_calls WHERE ts >= ? GROUP BY hour", since);
+    const mcpRecent = all<{ ts: string; tool: string; ok: number; ms: number }>("SELECT ts, tool, ok, ms FROM mcp_calls ORDER BY id DESC LIMIT 12");
+    const monthStart = todayStr(new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1)).slice(0, 7);
+    const months = all<{ month: string; kind: Kind; count: number }>(
+      `SELECT substr(a.taken_at,1,7) month, a.kind, COUNT(*) count FROM attachments a
+       WHERE ${VISIBLE} AND a.role = 'media' AND a.taken_at >= ? GROUP BY month, a.kind`, monthStart);
+    const entryMonths = all<{ month: string; count: number }>(
+      "SELECT substr(date,1,7) month, COUNT(*) count FROM entries WHERE deleted_at IS NULL AND date >= ? GROUP BY month", monthStart);
+
+    // 连续记日记天数（截至今天或昨天）
+    const dates = new Set(all<{ date: string }>("SELECT DISTINCT date FROM entries WHERE deleted_at IS NULL").map((r) => r.date));
+    let streak = 0;
+    const d = new Date();
+    if (!dates.has(todayStr(d))) d.setDate(d.getDate() - 1);
+    while (dates.has(todayStr(d))) { streak++; d.setDate(d.getDate() - 1); }
+
+    return {
+      today: todayStr(), since, streak, counts: this.counts(),
+      kinds, pages, entryDays, mediaDays, mcpDays, mcpTools, mcpHours, mcpRecent, months, entryMonths,
+      mcpTotal: (this.db.prepare("SELECT COUNT(*) n FROM mcp_calls").get() as { n: number }).n,
+      first_entry: (this.db.prepare("SELECT MIN(date) d FROM entries WHERE deleted_at IS NULL").get() as { d: string | null }).d,
+    };
   }
 
   // ---------- 内部 ----------
@@ -294,8 +433,4 @@ function textContent(a: Attachment): string {
     fs.closeSync(fd);
     return buf.toString("utf8");
   } catch { return ""; }
-}
-
-export function isValidId(id: string): boolean {
-  return ID_RE.test(normalizeId(id));
 }
