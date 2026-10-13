@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DB } from "./db.js";
 import { paths } from "./config.js";
-import { localIso, removeStored, type StoredFile, type Kind } from "./media.js";
+import { localIso, removeStored, removeViews, type StoredFile, type Kind } from "./media.js";
 
 export type Role = "media" | "page";
 
@@ -366,6 +366,7 @@ export class Store {
   }
 
   private removeFileIfUnused(a: Attachment) {
+    removeViews(a.id);  // 浏览版按附件 id 缓存，附件删了就清掉
     const used = this.db.prepare("SELECT 1 FROM attachments WHERE path = ?").get(a.path);
     if (!used) removeStored(a.path, a.thumb);
   }

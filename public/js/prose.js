@@ -1,5 +1,5 @@
 // 正文的只读排版（阅读页、日记详情）与影像块，编辑器也复用影像块的外观
-import { $$, esc, ICON, waveSvg, fmtDur } from "./lib.js";
+import { $$, esc, ICON, waveSvg, fmtDur, imgAttrs } from "./lib.js";
 import { renderHtml } from "./md.js";
 
 /**
@@ -17,7 +17,7 @@ export function mediaFigure(a, caption, { edit = false } = {}) {
   let box;
   switch (a.kind) {
     case "image":
-      box = `<img src="/files/${a.id}" alt="${esc(caption)}" loading="lazy" decoding="async" draggable="false"${a.width && a.height ? ` width="${a.width}" height="${a.height}"` : ""}>`;
+      box = `<img ${imgAttrs(a, "(max-width: 860px) 100vw, 780px")} alt="${esc(caption)}" loading="lazy" decoding="async" draggable="false"${a.width && a.height ? ` width="${a.width}" height="${a.height}"` : ""}>`;
       break;
     case "video":
       box = `<video src="/files/${a.id}" controls preload="metadata" playsinline${a.thumb ? ` poster="/thumbs/${a.id}"` : ""}></video>`;

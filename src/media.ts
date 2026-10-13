@@ -122,6 +122,57 @@ async function makeThumb(id: string, file: string, kind: Kind): Promise<ThumbRes
   };
 }
 
+// ---------- 浏览用的中等尺寸图片 ----------
+// 原图动辄 3000×4000、10MB，页面里只需要几百到一两千像素宽：按需生成 WebP 并缓存在 thumbs 目录
+
+export const VIEW_WIDTHS = [800, 1600, 2560];
+const viewName = (id: string, w: number) => `${id}_w${w}.webp`;
+const inflight = new Map<string, Promise<string | null>>();
+
+/** 返回宽度为 w 的浏览版文件路径；不适合转换的格式（GIF 动图、SVG 等）或转换失败时返回 null，由调用方回退到原图 */
+export function viewImage(id: string, rel: string, mime: string, w: number): Promise<string | null> {
+  const name = viewName(id, w);
+  const out = path.join(paths.thumbs, name);
+  if (fs.existsSync(out)) return Promise.resolve(out);
+  if (!/^image\/(jpeg|png|webp|tiff|avif|heic|heif)$/.test(mime)) return Promise.resolve(null);
+  let job = inflight.get(name);
+  if (!job) {
+    job = (async () => {
+      const tmp = `${out}.${process.pid}.tmp`;
+      try {
+        await sharp(path.join(paths.media, rel), { failOn: "none" }).rotate()
+          .resize({ width: w, withoutEnlargement: true }).webp({ quality: 82 }).toFile(tmp);
+        fs.renameSync(tmp, out);
+        return out;
+      } catch {
+        fs.rmSync(tmp, { force: true });
+        return null;
+      }
+    })().finally(() => inflight.delete(name));
+    inflight.set(name, job);
+  }
+  return job;
+}
+
+const warming = new Set<Promise<unknown>>();
+
+/** 上传后在后台预先生成常用的两档，第一次打开时不用等 */
+export function warmViews(a: { id: string; path: string; mime: string; kind: string }) {
+  if (a.kind !== "image") return;
+  const job = viewImage(a.id, a.path, a.mime, 800).then(() => viewImage(a.id, a.path, a.mime, 1600));
+  warming.add(job);
+  void job.finally(() => warming.delete(job));
+}
+
+/** 等后台的图片生成都结束：永久删除原图前调用（Windows 上正被读取的文件删不掉） */
+export async function viewsIdle() {
+  while (warming.size || inflight.size) await Promise.allSettled([...warming, ...inflight.values()]);
+}
+
+export function removeViews(id: string) {
+  for (const w of VIEW_WIDTHS) fs.rmSync(path.join(paths.thumbs, viewName(id, w)), { force: true });
+}
+
 export interface StoredFile {
   id: string; kind: Kind; mime: string; size: number; sha256: string;
   path: string; thumb: string | null; width: number | null; height: number | null;

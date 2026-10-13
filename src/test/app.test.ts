@@ -240,6 +240,31 @@ test("MCP：写入正文并提示无效的影像引用", async () => {
   await client.close();
 });
 
+test("图片浏览版：按宽度生成 WebP 并缓存，不放大，原图与下载不受影响", async () => {
+  const a = await upload("大图.png", await png(2000, 1500));
+  const get = async (q: string) => {
+    const r = await fetch(`${base}/files/${a.id}${q}`);
+    return { type: r.headers.get("content-type") ?? "", buf: Buffer.from(await r.arrayBuffer()) };
+  };
+  const v800 = await get("?w=800");
+  assert.match(v800.type, /webp/);
+  assert.equal((await sharp(v800.buf).metadata()).width, 800);
+  assert.equal((await sharp((await get("?w=1000")).buf).metadata()).width, 1600, "向上取到最近的档位");
+  assert.equal((await sharp((await get("?w=99999")).buf).metadata()).width, 2000, "不超过原图宽度");
+  assert.match((await get("")).type, /png/, "不带 w 仍是原图");
+  assert.match((await get("?w=800&download=1")).type, /octet-stream|png/, "下载永远是原件");
+  const cached = path.join(dataDir, "thumbs", `${a.id}_w800.webp`);
+  assert.ok(fs.existsSync(cached));
+  store.trashAttachments([a.id]);
+  store.purgeAttachment(a.id);
+  assert.ok(!fs.existsSync(cached), "永久删除时清掉浏览版缓存");
+});
+
+test("静态资源与接口启用 gzip", async () => {
+  const r = await fetch(`${base}/js/editor.js`, { headers: { "Accept-Encoding": "gzip" } });
+  assert.equal(r.headers.get("content-encoding"), "gzip");
+});
+
 test("统计与导出", async () => {
   const s = await (await fetch(`${base}/api/stats`)).json();
   assert.ok(s.counts.entries > 0);

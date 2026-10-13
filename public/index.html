@@ -7,6 +7,13 @@
   <title>数字日记</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='3' width='22' height='26' rx='4' fill='%23F3D88A' stroke='%237A4F06' stroke-width='2'/%3E%3Cpath d='M10 10h12M10 15h12M10 20h7' stroke='%237A4F06' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="css/app.css">
+  <!-- 预加载首屏一定会用到的模块，避免 import 一层层串行请求 -->
+  <link rel="modulepreload" href="js/main.js">
+  <link rel="modulepreload" href="js/lib.js">
+  <link rel="modulepreload" href="js/upload.js">
+  <link rel="modulepreload" href="js/viewer.js">
+  <link rel="modulepreload" href="js/dialogs.js">
+  <link rel="modulepreload" href="js/gallery.js">
 </head>
 <body>
   <div class="shell">

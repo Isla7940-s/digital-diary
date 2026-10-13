@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { config, paths } from "./config.js";
-import { storeFile, tmpPath } from "./media.js";
+import { storeFile, tmpPath, warmViews } from "./media.js";
 import { todayStr, bodyRefs, type Store, type Attachment, type EntryWithAttachments } from "./store.js";
 
 const INSTRUCTIONS = `这是一本「数字日记」的连接器。主人在纸质笔记本上手写日记，这里管理与之关联的内容：
@@ -191,7 +191,9 @@ export function buildMcpServer(store: Store): McpServer {
       if (a.text !== undefined && !path.extname(a.filename)) a.filename += ".txt";
     }
     const stored = await storeFile(file, a.filename, mime, a.taken_at ? new Date(a.taken_at) : undefined);
-    return json(withUrls(store.addAttachment(stored, a.filename, { entryId: a.entry_id, role: a.role, caption: a.caption })));
+    const rec = store.addAttachment(stored, a.filename, { entryId: a.entry_id, role: a.role, caption: a.caption });
+    warmViews(rec);
+    return json(withUrls(rec));
   });
 
   server.registerTool("get_media", {

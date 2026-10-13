@@ -56,6 +56,10 @@ button { font: inherit; color: inherit; }
 * { scrollbar-width: none; }
 *::-webkit-scrollbar { display: none; }
 ::selection { background: var(--accent-soft); }
+/* 去掉系统默认的蓝色选中遮罩（图片、影像块）和手机点按高亮 */
+html { -webkit-tap-highlight-color: transparent; }
+img::selection, video::selection { background: transparent; }
+img { -webkit-user-drag: none; }
 
 /* ============ 外壳 ============ */
 .shell { min-height: 100vh; }
@@ -177,7 +181,7 @@ label.field small { color: var(--muted); }
 .section-title .grow { flex: 1; }
 
 /* ============ 图库网格 ============ */
-.day-group { margin-bottom: 22px; }
+.day-group { margin-bottom: 22px; content-visibility: auto; contain-intrinsic-size: auto 480px; }  /* 屏幕外的分组跳过排版绘制 */
 .day-head { display: flex; align-items: baseline; gap: 10px; padding: 0 2px 8px; position: sticky; top: 0; z-index: 4; background: linear-gradient(var(--bg) 70%, rgba(251,245,226,0)); padding-top: 8px; }
 .day-head .d { font-size: 15px; font-weight: 650; }
 .day-head .w { font-size: 12.5px; color: var(--muted); }
@@ -360,7 +364,7 @@ input.title-input:focus { border-color: var(--accent) !important; background: va
 .toc-e.on .t { color: var(--ink); font-weight: 600; }
 .toc-back { display: none; }
 .book { max-width: 860px; margin: 0 0 0 auto; width: 100%; }  /* 贴着右侧目录 */
-.chapter { margin-bottom: 64px; scroll-margin-top: 20px; }
+.chapter { margin-bottom: 64px; scroll-margin-top: 20px; content-visibility: auto; contain-intrinsic-size: auto 900px; }
 .chapter-head { text-align: center; margin-bottom: 24px; display: grid; justify-items: center; gap: 6px; }
 .chapter-head .cd { font-family: var(--serif); font-size: 26px; font-weight: 700; letter-spacing: .06em; }
 .chapter-head .cw { color: var(--muted); font-size: 13px; letter-spacing: .1em; }
@@ -783,6 +787,10 @@ textarea.doc-title::placeholder { color: var(--faint); }
 .blk.sel, .blk.picked { background: rgba(201, 138, 27, .1); }
 .blk.sel .mbox, .blk[data-t=hr].sel hr { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
 .blk.dragging { opacity: .35; }
+/* 选中影像 / 分割线时只用自己的描边，不要浏览器的蓝色选区遮罩 */
+.ed-root .blk[data-t=media]::selection, .ed-root .blk[data-t=media] *::selection,
+.ed-root .blk[data-t=hr]::selection, .ed-root .blk[data-t=hr] *::selection { background: transparent; }
+.ed-root .pm .mbox { user-select: none; -webkit-user-select: none; }
 .ed-root code { font: .88em var(--mono); background: var(--sunken); color: #A3461F; padding: 1px 5px; border-radius: 4px; }
 .ed-root a, .prose a { color: #2A66B8; text-decoration: underline; text-decoration-color: rgba(42, 102, 184, .35); text-underline-offset: 3px; }
 .ed-root s, .ed-root strike { color: var(--muted); }
@@ -925,6 +933,11 @@ body.entry-mode .doc-top { margin: 0 -32px 22px; }
 @media (max-width: 860px) {
   body.doc-mode .mobile-top, body.doc-mode .tabbar, body.entry-mode .mobile-top { display: none; }
   body.entry-mode .doc-top { margin: 0 -14px 14px; }
+  /* 手机上毛玻璃很耗性能（滚动时每帧重算），换成实色背景 */
+  .mobile-top, .tabbar, .doc-top, .doc-mbar { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .mobile-top { background: #F5EBCA; }
+  .tabbar, .doc-mbar { background: #FFFBEE; }
+  .doc-top { background: var(--bg); }
   body.doc-mode .main { padding: 0 0 calc(70px + env(safe-area-inset-bottom)); }
   .doc-top { margin: 0; padding: max(6px, env(safe-area-inset-top)) 6px 6px; gap: 2px; }
   .doc-top .btn span, .doc-top .doc-state span { display: none; }

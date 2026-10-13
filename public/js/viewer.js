@@ -2,7 +2,7 @@
 // 图片：滚轮 / 双指缩放（以指针为中心）、拖动平移、双击切换「适应 / 原始大小」、旋转；先显示缩略图再换原图，并预加载前后两张
 // 切换：← → 键、两侧按钮、底部缩略图条；手机左右滑动跟手切换、下滑关闭、单击隐藏工具栏
 // 视频 / 录音 / 文字 / 其他文件照常播放或阅读；右侧（手机为底部）信息面板可改说明、归组、下载、删除
-import { $, $$, api, esc, ICON, KIND_LABEL, fmtDay, fmtTime, fmtSize, fmtDur, weekday, waveSvg, emit, toast, confirmSheet } from "./lib.js";
+import { $, $$, api, esc, ICON, KIND_LABEL, fmtDay, fmtTime, fmtSize, fmtDur, weekday, waveSvg, emit, toast, confirmSheet, viewUrl } from "./lib.js";
 import { pickEntryDialog } from "./dialogs.js";
 
 const root = () => $("#viewer");
@@ -43,12 +43,22 @@ export function closeViewer() {
 
 // ---------- 渲染 ----------
 
+/** 图片铺满屏幕时需要的像素宽度（含屏幕密度） */
+function screenPx(a) {
+  const ratio = a.width && a.height ? a.width / a.height : 1;
+  return Math.ceil(Math.min(innerWidth, innerHeight * ratio) * (devicePixelRatio || 1));
+}
+/** 当前已加载版本的像素宽度（原图记为无穷大） */
+const loadedWidth = (url) => Number(/[?&]w=(\d+)/.exec(url)?.[1]) || Infinity;
+
 function slideHtml(a, current) {
   if (!a) return "";
   if (a.kind === "image") {
     const dims = a.width && a.height ? ` width="${a.width}" height="${a.height}"` : "";
-    const first = a.thumb ? `/thumbs/${a.id}` : `/files/${a.id}`;
-    return `<img class="${current ? "v-img" : "v-fit"}" src="${first}" data-full="/files/${a.id}"${dims} alt="" draggable="false">`;
+    // 三级加载：缩略图（立即）→ 适合屏幕的浏览版 → 放大超过浏览版清晰度时才取原图
+    const full = viewUrl(a, screenPx(a));
+    const first = a.thumb ? `/thumbs/${a.id}` : full;
+    return `<img class="${current ? "v-img" : "v-fit"}" src="${first}" data-full="${full}" data-orig="/files/${a.id}"${dims} alt="" draggable="false" decoding="async">`;
   }
   if (!current) {
     // 相邻的非图片只放占位，避免两段视频同时加载
@@ -145,7 +155,7 @@ function upgrade(img) {
   const full = img.dataset.full;
   if (!full || img.src.endsWith(full)) return;
   const pre = new Image();
-  pre.onload = () => { if (img.isConnected) img.src = full; };
+  pre.onload = () => { if (img.isConnected && !img.src.endsWith(img.dataset.orig)) img.src = full; };  // 已换成原图就别降级
   pre.src = full;
 }
 
@@ -159,7 +169,7 @@ function stageBox() {
 }
 
 function setupImage(img, a) {
-  const z = state.z = { img, nw: a.width || 0, nh: a.height || 0, r: 0, s: 1, x: 0, y: 0, fit: 1 };
+  const z = state.z = { img, nw: a.width || 0, nh: a.height || 0, r: 0, s: 1, x: 0, y: 0, fit: 1, loadedW: loadedWidth(img.dataset.full), hires: false };
   const ready = () => {
     if (!z.nw || !z.nh) { z.nw = img.naturalWidth; z.nh = img.naturalHeight; }
     img.style.width = `${z.nw}px`;
@@ -191,6 +201,13 @@ function apply(anim = false) {
   $("#vStage")?.classList.toggle("zoomed", z.s > 1.01);
   const pct = $(".v-pct");
   if (pct) pct.textContent = `${Math.round(z.fit * z.s * 100)}%`;
+  // 放大到浏览版不够清晰时，换成原图（尺寸不变，只是更清楚）
+  if (!z.hires && z.nw && z.nw * z.fit * z.s * (devicePixelRatio || 1) > z.loadedW * 1.1) {
+    z.hires = true;
+    const pre = new Image();
+    pre.onload = () => { if (z.img.isConnected) z.img.src = pre.src; };
+    pre.src = z.img.dataset.orig;
+  }
 }
 
 function bounds(z, s = z.s) {

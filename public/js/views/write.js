@@ -1,5 +1,5 @@
 // 正文编辑（飞书文档式）：转写纸质日记，并在文中插入本篇的照片、视频、录音
-import { $, $$, api, esc, entryHead, ICON, debounce, toast, emit, copy, sheet, fmtDate, weekday, fmtNum } from "../lib.js";
+import { $, $$, api, esc, entryHead, imgAttrs, ICON, debounce, toast, emit, copy, sheet, fmtDate, weekday, fmtNum } from "../lib.js";
 import { createEditor } from "../editor.js";
 import { bodyHash } from "../md.js";
 import { createGallery } from "../gallery.js";
@@ -68,7 +68,7 @@ export async function render({ app, params: [rawId] }) {
 
   // ---------- 原稿对照 ----------
   const renderPages = () => {
-    $("#wrPages").innerHTML = pages.map((p, i) => `<figure data-id="${p.id}"><img loading="lazy" src="/files/${p.id}" alt="第 ${i + 1} 页"${p.width && p.height ? ` width="${p.width}" height="${p.height}"` : ""}><figcaption>第 ${i + 1} 页</figcaption></figure>`).join("");
+    $("#wrPages").innerHTML = pages.map((p, i) => `<figure data-id="${p.id}"><img loading="lazy" decoding="async" ${imgAttrs(p, "(max-width: 860px) 100vw, 34vw")} alt="第 ${i + 1} 页"${p.width && p.height ? ` width="${p.width}" height="${p.height}"` : ""}><figcaption>第 ${i + 1} 页</figcaption></figure>`).join("");
   };
   renderPages();
   const setSide = (on) => {
@@ -95,7 +95,7 @@ export async function render({ app, params: [rawId] }) {
   const ed = createEditor($("#wrEditor"), {
     markdown: e.body,
     getMedia: (mid) => byId.get(mid),
-    onChange: () => { markDirty(); renderCount(); renderTrayLater(); },
+    onChange: () => { markDirty(); renderCountLater(); renderTrayLater(); },
     pickMedia: () => pickMediaDialog(),
     visibleBand,
     uploadFiles: (files) => files.map((f) => uploadFiles([f], { entryId: id, role: "media" }).then(async (r) => {
@@ -140,7 +140,6 @@ export async function render({ app, params: [rawId] }) {
       e.body = c.body;
       const t = new Date();
       setState("ok", `已保存 ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`);
-      emit("data-changed");
     } catch (err) {
       if (err.status === 409) { conflicted = true; setState("err", "有冲突，点此处理"); return resolveConflict(err.data?.body ?? ""); }
       setState("err", `保存失败：${err.message}`);
@@ -203,6 +202,7 @@ export async function render({ app, params: [rawId] }) {
         ${a.kind === "video" ? `<i>${ICON.play}</i>` : ""}</button>`).join("")}</div>`;
   };
   const renderTrayLater = debounce(renderTray, 300);
+  const renderCountLater = debounce(() => renderCount(), 400);  // 字数需要整篇序列化，别每个按键都算
   $("#wrTray").addEventListener("mousedown", (ev) => { if (ev.target.closest(".dt-item")) ev.preventDefault(); });
   $("#wrTray").addEventListener("click", (ev) => {
     const b = ev.target.closest(".dt-item");

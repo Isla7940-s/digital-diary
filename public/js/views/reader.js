@@ -1,6 +1,6 @@
 // 阅读：按时间顺序翻阅日记。「转写」模式显示图文混排的正文，「原稿」模式翻阅手写页的照片；
 // 没有放进正文的影像附在每篇末尾
-import { $, $$, api, esc, ICON, fmtDate, weekday } from "../lib.js";
+import { $, $$, api, esc, ICON, fmtDate, weekday, imgAttrs } from "../lib.js";
 import { tileHtml, hydrateText } from "../gallery.js";
 import { openViewer } from "../viewer.js";
 import { renderProse, hydrateProse } from "../prose.js";
@@ -79,7 +79,7 @@ export async function render({ app, params: [targetId] }) {
       main = `<div class="prose reading">${renderProse(e.body, byId)}</div>`;
     } else if (e.pages.length) {
       main = e.pages.map((p, i) => `<figure class="sheet-page" data-page="${p.id}" style="margin-left:auto;margin-right:auto${p.width && p.height ? `;aspect-ratio:${p.width}/${p.height}` : ""}">
-        <img loading="lazy" src="/files/${p.id}" alt="第 ${i + 1} 页"><span class="pno">${i + 1} / ${e.pages.length}</span></figure>`).join("");
+        <img loading="lazy" decoding="async" ${imgAttrs(p, "(max-width: 860px) 100vw, 860px")} alt="第 ${i + 1} 页"><span class="pno">${i + 1} / ${e.pages.length}</span></figure>`).join("");
       if (!e.body) main += `<p class="chapter-note">这篇还没有转写。<a href="#/write/${esc(e.id)}">去转写 →</a></p>`;
     } else main = "";
     const switchHint = useText && e.pages.length ? `<button class="btn sm ghost" data-flip="page">${ICON.page}看原稿 ${e.pages.length} 页</button>`

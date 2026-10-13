@@ -53,7 +53,8 @@ async function refreshCounts() {
   try {
     counts = await api("/counts");
     renderNav();
-    const s = await api("/stats").catch(() => null);
+    // 侧边栏底部的占用统计只在电脑端显示，手机上不必查询（统计接口较重）
+    const s = getComputedStyle($("#sidebar")).display === "none" ? null : await api("/stats").catch(() => null);
     if (s) {
       const total = s.kinds.reduce((t, k) => t + k.bytes, 0) + s.pages.bytes;
       const part = (k) => (s.kinds.find((x) => x.kind === k)?.bytes || 0);
@@ -147,7 +148,10 @@ async function router() {
 }
 
 addEventListener("hashchange", () => { router(); scrollTo(0, 0); });
-on("data-changed", refreshCounts);
-on("uploaded", () => { clearTimeout(window.__ct); window.__ct = setTimeout(refreshCounts, 400); });
+// 连续多次变更合并成一次刷新
+let countsTimer;
+const refreshSoon = (ms) => { clearTimeout(countsTimer); countsTimer = setTimeout(refreshCounts, ms); };
+on("data-changed", () => refreshSoon(200));
+on("uploaded", () => refreshSoon(400));
 refreshCounts();
 router();

@@ -4,12 +4,13 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import express, { type Request, type Response, type NextFunction } from "express";
 import multer from "multer";
+import compression from "compression";
 import QRCode from "qrcode";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config, paths } from "./config.js";
 import { openDb } from "./db.js";
 import { Store, NotFound, BadInput, Conflict } from "./store.js";
-import { storeFile } from "./media.js";
+import { storeFile, viewImage, warmViews, viewsIdle, VIEW_WIDTHS } from "./media.js";
 import { exportZip } from "./export.js";
 import { buildMcpServer } from "./mcp.js";
 
@@ -19,6 +20,8 @@ const require = createRequire(import.meta.url);
 export function createApp(store: Store) {
   const app = express();
   app.disable("x-powered-by");
+  // 压缩 JS / CSS / JSON（图片视频本身已压缩，中间件会自动跳过）；MCP 可能是流式响应，不压缩
+  app.use(compression({ filter: (req, res) => !req.path.startsWith("/mcp") && compression.filter(req, res) }));
   const upload = multer({ dest: paths.tmp, defParamCharset: "utf8" });
 
   // ---------- MCP（无状态 Streamable HTTP） ----------
@@ -61,7 +64,8 @@ export function createApp(store: Store) {
   api.patch("/entries/:id", (req, res) => res.json(store.updateEntry(req.params.id, req.body ?? {})));
   api.delete("/entries/:id", (req, res) => res.json(store.trashEntry(req.params.id)));
   api.post("/entries/:id/restore", (req, res) => res.json(store.restoreEntry(req.params.id)));
-  api.delete("/entries/:id/purge", (req, res) => res.json(store.purgeEntry(req.params.id)));
+  // 永久删除前等后台图片生成结束，否则原图可能正被读取而删不掉
+  api.delete("/entries/:id/purge", async (req, res) => { await viewsIdle(); res.json(store.purgeEntry(req.params.id)); });
   api.put("/entries/:id/order", (req, res) => res.json(store.reorder(req.params.id, ids(req.body?.ids))));
 
   // 图库
@@ -88,7 +92,9 @@ export function createApp(store: Store) {
     const out = [];
     for (const [i, f] of files.entries()) {
       const stored = await storeFile(f.path, f.originalname, f.mimetype, mtimes[i] ? new Date(mtimes[i]) : undefined);
-      out.push(store.addAttachment(stored, f.originalname, { entryId, role }));
+      const rec = store.addAttachment(stored, f.originalname, { entryId, role });
+      warmViews(rec);
+      out.push(rec);
     }
     res.status(201).json(out);
   });
@@ -97,10 +103,10 @@ export function createApp(store: Store) {
   api.post("/media/trash", (req, res) => res.json(store.trashAttachments(ids(req.body?.ids))));
   api.patch("/media/:id", (req, res) => res.json(store.updateAttachment(req.params.id, req.body ?? {})));
   api.post("/media/:id/restore", (req, res) => res.json(store.restoreAttachment(req.params.id)));
-  api.delete("/media/:id/purge", (req, res) => res.json(store.purgeAttachment(req.params.id)));
+  api.delete("/media/:id/purge", async (req, res) => { await viewsIdle(); res.json(store.purgeAttachment(req.params.id)); });
 
   api.get("/trash", (_req, res) => res.json(store.listTrash()));
-  api.delete("/trash", (_req, res) => res.json(store.emptyTrash()));
+  api.delete("/trash", async (_req, res) => { await viewsIdle(); res.json(store.emptyTrash()); });
   api.get("/tags", (_req, res) => res.json(store.listTags()));
   api.get("/counts", (_req, res) => res.json(store.counts()));
   api.get("/stats", (_req, res) => res.json(store.stats()));
@@ -122,8 +128,15 @@ export function createApp(store: Store) {
   app.use("/api", api);
 
   // ---------- 文件 ----------
-  app.get("/files/:id", (req, res) => {
+  app.get("/files/:id", async (req, res) => {
     const a = store.getAttachment(req.params.id, true);
+    // ?w=800|1600|2560：图片的浏览版（WebP），页面展示用；下载与放大到细节时才用原图
+    const want = Number(req.query.w);
+    if (want && a.kind === "image" && !req.query.download) {
+      const w = VIEW_WIDTHS.find((x) => x >= want) ?? VIEW_WIDTHS[VIEW_WIDTHS.length - 1];
+      const file = await viewImage(a.id, a.path, a.mime, w);
+      if (file) return res.type("image/webp").sendFile(file, { maxAge: "1y", immutable: true });
+    }
     const disp = req.query.download ? "attachment" : "inline";
     res.set("Content-Disposition", `${disp}; filename*=UTF-8''${encodeURIComponent(a.original_name)}`);
     res.set("X-Content-Type-Options", "nosniff");
