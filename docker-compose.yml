@@ -1,0 +1,14 @@
+services:
+  diary:
+    build: .
+    container_name: digital-diary
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data          # 数据库 + 原始文件 + 缩略图，备份这个目录即可
+    environment:
+      TZ: Asia/Shanghai       # 决定「今天」是哪天
+      # 改成你实际访问的地址（局域网 IP 或域名），MCP 返回的文件链接会用到
+      PUBLIC_URL: http://192.168.1.10:3000
+      # MCP_MAX_UPLOAD_MB: 200
