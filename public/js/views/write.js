@@ -1,5 +1,6 @@
 // 正文编辑（飞书文档式）：转写纸质日记，并在文中插入本篇的照片、视频、录音
-import { $, $$, api, esc, entryHead, imgAttrs, ICON, debounce, toast, emit, copy, sheet, fmtDate, weekday, fmtNum } from "../lib.js";
+// 独立文章（#/a/编号）也用这个页面写和看，只是没有原稿对照，也没有单独的详情页
+import { $, $$, api, esc, entryHead, articleHead, imgAttrs, ICON, debounce, toast, emit, copy, sheet, confirmSheet, fmtDate, weekday, fmtNum } from "../lib.js";
 import { createEditor } from "../editor.js";
 import { bodyHash } from "../md.js";
 import { createGallery } from "../gallery.js";
@@ -10,17 +11,21 @@ import { setUploadTarget } from "../main.js";
 const SIDE_KEY = "write.side";
 const HINT = "方向键移动 · 回车选中 · 空格插入，也可以直接点选";
 
-export async function render({ app, params: [rawId] }) {
+export async function render({ app, params: [rawId], article = false }) {
   let e;
   try { e = await api(`/entries/${encodeURIComponent(rawId)}`); }
   catch (err) {
     if (err.status !== 404) throw err;
-    app.innerHTML = `<div class="empty"><div class="art">${ICON.search}</div><h3>找不到编号 <span class="idpill">${esc(rawId)}</span></h3><a class="btn" href="#/entries">全部日记</a></div>`;
+    app.innerHTML = `<div class="empty"><div class="art">${ICON.search}</div><h3>找不到编号 <span class="idpill">${esc(rawId)}</span></h3>${article ? `<a class="btn" href="#/articles">全部文章</a>` : `<a class="btn" href="#/entries">全部日记</a>`}</div>`;
     return;
   }
   const id = e.id;
+  const isArticle = e.kind === "article";
+  // 日记和文章的地址不混用：走错了就换到对应的地址
+  if (isArticle !== article) { location.replace(`#/${isArticle ? "a" : "write"}/${encodeURIComponent(id)}`); return; }
+  const noun = isArticle ? "文章" : "日记";
   if (e.deleted_at) {
-    app.innerHTML = `<div class="empty"><div class="art">${ICON.trash}</div><h3>这篇日记在回收站中</h3><p>恢复后才能编辑正文。</p><a class="btn" href="#/e/${esc(id)}">返回日记</a></div>`;
+    app.innerHTML = `<div class="empty"><div class="art">${ICON.trash}</div><h3>这篇${noun}在回收站中</h3><p>恢复后才能编辑正文。</p>${isArticle ? `<a class="btn" href="#/trash">打开回收站</a>` : `<a class="btn" href="#/e/${esc(id)}">返回日记</a>`}</div>`;
     return;
   }
 
@@ -30,9 +35,15 @@ export async function render({ app, params: [rawId] }) {
   try { side = localStorage.getItem(SIDE_KEY) === "1" && pages.length > 0 && innerWidth > 1100; } catch { /* 忽略 */ }
 
   document.body.classList.add("doc-mode");
+  const stateHtml = `<span class="doc-state" id="wrState"><i></i><span>已保存</span></span>`;
   app.innerHTML = `
-    ${entryHead(id, "write", {
-      state: `<span class="doc-state" id="wrState"><i></i><span>已保存</span></span>`,
+    ${isArticle ? articleHead(e.title, {
+      state: stateHtml,
+      right: `<button class="btn sm ghost" id="wrSideBtn" hidden></button>
+        <button class="btn sm ghost" id="wrMediaBtn">${ICON.image}<span>插入影像</span></button>
+        <button class="icon-btn" id="wrMore" title="更多">${ICON.menu}</button>`,
+    }) : entryHead(id, "write", {
+      state: stateHtml,
       right: `<button class="btn sm ghost ${side ? "on" : ""}" id="wrSideBtn" ${pages.length ? "" : "hidden"}>${ICON.page}<span>原稿对照</span></button>
         <button class="btn sm ghost" id="wrMediaBtn">${ICON.image}<span>插入影像</span></button>
         <a class="btn sm ghost" href="#/read/${esc(id)}">${ICON.book}<span>阅读</span></a>
@@ -43,7 +54,7 @@ export async function render({ app, params: [rawId] }) {
         <textarea class="doc-title" id="wrTitle" rows="1" maxlength="200" placeholder="请输入标题">${esc(e.title)}</textarea>
         <div class="doc-meta">
           <span>${fmtDate(e.date)} ${weekday(e.date)}</span>
-          <span class="idpill">${esc(id)}</span>
+          ${isArticle ? "" : `<span class="idpill">${esc(id)}</span>`}
           <span id="wrCount"></span>
           ${e.tags.map((t) => `<span class="tag">#${esc(t)}</span>`).join("")}
         </div>
@@ -94,6 +105,7 @@ export async function render({ app, params: [rawId] }) {
 
   const ed = createEditor($("#wrEditor"), {
     markdown: e.body,
+    placeholder: isArticle ? "开始写点什么。输入「/」插入标题、列表、照片…" : undefined,
     getMedia: (mid) => byId.get(mid),
     onChange: () => { markDirty(); renderCountLater(); renderTrayLater(); },
     pickMedia: () => pickMediaDialog(),
@@ -111,7 +123,10 @@ export async function render({ app, params: [rawId] }) {
   const title = $("#wrTitle");
   const fit = () => { title.style.height = "auto"; title.style.height = `${title.scrollHeight}px`; };
   fit();
-  title.addEventListener("input", () => { fit(); markDirty(); });
+  title.addEventListener("input", () => {
+    fit(); markDirty();
+    if (isArticle) $("#crumbTitle").textContent = title.value.trim() || "未命名";
+  });
   title.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" || ev.key === "ArrowDown") { ev.preventDefault(); ed.root.focus(); const first = ed.root.firstElementChild; if (first) { const r = document.createRange(); r.setStart(first, 0); getSelection().removeAllRanges(); getSelection().addRange(r); } }
   });
@@ -155,7 +170,7 @@ export async function render({ app, params: [rawId] }) {
   async function resolveConflict(remote) {
     latestRemote = remote;
     const choice = await sheet({
-      html: `<div class="sheet-body"><h2>这篇文章在别处被修改过</h2>
+      html: `<div class="sheet-body"><h2>这篇${isArticle ? "文章" : "转写"}在别处被修改过</h2>
           <p class="hint">可能是另一个打开着的页面或 AI 改动了它。为了不互相覆盖，这里已暂停自动保存。</p>
           <p class="hint">服务器上现在有 ${fmtNum(remote.replace(/\s/g, "").length)} 个字符，这里有 ${fmtNum(ed.getMarkdown().replace(/\s/g, "").length)} 个。</p></div>
         <div class="sheet-actions"><button class="btn" data-v="mine">保留这里的内容（覆盖）</button><button class="btn primary" data-v="remote" autofocus>载入最新内容</button></div>`,
@@ -229,14 +244,14 @@ export async function render({ app, params: [rawId] }) {
         const mk = () => {
           gal?.destroy();
           $$("#pmSeg button", el).forEach((b) => b.classList.toggle("on", b.dataset.v === tab));
-          $("#pmHint", el).textContent = tab === "entry" ? "这篇日记的富媒体；已在正文中的也可以再插入一次。" : "图库里的文件插入后会自动归入这篇日记。";
+          $("#pmHint", el).textContent = tab === "entry" ? `这篇${noun}的富媒体；已在正文中的也可以再插入一次。` : `图库里的文件插入后会自动归入这篇${noun}。`;
           gal = createGallery($("#pmGal", el), {
             groupByDay: tab !== "entry", showGroup: tab === "all", clickSelects: true,
             fetchPage: (offset) => tab === "entry"
               ? Promise.resolve(offset ? { items: [], total: e.media.length } : { items: e.media, total: e.media.length })
               : api(`/media?limit=120&offset=${offset}${tab === "ungrouped" ? "&ungrouped=1" : ""}`),
             onSelect: (s) => { $("#pmN", el).textContent = s.size ? `已选 ${s.size} 项 · 空格插入` : HINT; $("[data-ok]", el).disabled = !s.size; },
-            empty: `<p class="hint" style="padding:30px;text-align:center">${tab === "entry" ? "这篇日记还没有富媒体，可以切到「未归组」挑选，或直接上传。" : "没有可选的文件"}</p>`,
+            empty: `<p class="hint" style="padding:30px;text-align:center">${tab === "entry" ? `这篇${noun}还没有富媒体，可以切到「未归组」挑选，或直接上传。` : "没有可选的文件"}</p>`,
           });
         };
         // 键盘：方向键移动，回车选中 / 取消，空格确认插入
@@ -295,7 +310,7 @@ export async function render({ app, params: [rawId] }) {
   });
 
   // ---------- 更多 ----------
-  $("#wrMore").addEventListener("click", () => sheet({
+  $("#wrMore").addEventListener("click", () => isArticle ? articleMenu() : sheet({
     html: `<div class="menu-list">
         <button data-x="ai">${ICON.ai}复制 AI 转写指令</button>
         <button data-x="md">${ICON.text}查看 / 编辑 Markdown 源码</button>
@@ -312,6 +327,29 @@ export async function render({ app, params: [rawId] }) {
       $("[data-x=md]", el).addEventListener("click", () => { close(); sourceDialog(); });
     },
   }));
+
+  function articleMenu() {
+    sheet({
+      html: `<div class="menu-list">
+          <button data-x="md">${ICON.text}查看 / 编辑 Markdown 源码</button>
+          <button data-x="copy">${ICON.copy}复制编号 ${esc(id)}</button>
+          <button data-x="trash" class="danger">${ICON.trash}移到回收站</button>
+          <button data-close>${ICON.close}关闭</button></div>`,
+      mount: (el, close) => {
+        $("[data-x=md]", el).addEventListener("click", () => { close(); sourceDialog(); });
+        $("[data-x=copy]", el).addEventListener("click", () => { close(); copy(id); });
+        $("[data-x=trash]", el).addEventListener("click", async () => {
+          close();
+          if (!(await confirmSheet("把这篇文章移到回收站？", "文章里的照片、视频会一起移入，可以在回收站恢复。", "移到回收站", true))) return;
+          await save();
+          await api(`/entries/${encodeURIComponent(id)}`, { method: "DELETE" });
+          emit("data-changed");
+          toast("已移到回收站");
+          location.hash = "#/articles";
+        });
+      },
+    });
+  }
 
   function sourceDialog() {
     sheet({

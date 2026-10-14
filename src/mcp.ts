@@ -27,11 +27,11 @@ export function withUrls(a: Attachment) {
   };
 }
 
-function entryOut<T extends { id: string; pages?: Attachment[]; media?: Attachment[]; preview?: unknown; cover?: unknown }>(e: T) {
+function entryOut<T extends { id: string; kind?: string; pages?: Attachment[]; media?: Attachment[]; preview?: unknown; cover?: unknown }>(e: T) {
   const { preview: _p, cover: _c, ...rest } = e;
   return {
     ...rest,
-    page_url: `${config.publicUrl}/#/e/${e.id}`,
+    page_url: `${config.publicUrl}/#/${e.kind === "article" ? "a" : "e"}/${e.id}`,
     ...(e.pages ? { pages: e.pages.map(withUrls) } : {}),
     ...(e.media ? { media: e.media.map(withUrls) } : {}),
   };
@@ -85,8 +85,9 @@ export function buildMcpServer(store: Store): McpServer {
 
   server.registerTool("list_entries", {
     title: "列出日记",
-    description: "按日期倒序列出日记，可按日期范围、标签、关键词过滤。返回摘要（媒体数量、原稿页数）。",
+    description: "按日期倒序列出日记，可按日期范围、标签、关键词过滤。返回摘要（媒体数量、原稿页数）。kind=article 列出独立文章（不对应纸质本，编号以 A 开头）。",
     inputSchema: {
+      kind: z.enum(["diary", "article", "all"]).optional().describe("默认 diary（纸质日记）"),
       from: dateSchema.optional(), to: dateSchema.optional(), tag: z.string().optional(),
       query: z.string().optional().describe("关键词，空格分隔表示同时包含"),
       has_pages: z.boolean().optional().describe("只看已上传纸质原稿的日记"),
@@ -94,7 +95,7 @@ export function buildMcpServer(store: Store): McpServer {
     },
     annotations: { readOnlyHint: true },
   }, async (a) => {
-    const r = store.listEntries({ from: a.from, to: a.to, tag: a.tag, q: a.query, hasPages: a.has_pages, limit: a.limit, offset: a.offset });
+    const r = store.listEntries({ kind: a.kind, from: a.from, to: a.to, tag: a.tag, q: a.query, hasPages: a.has_pages, limit: a.limit, offset: a.offset });
     return json({ ...r, items: r.items.map(entryOut) });
   });
 
@@ -104,21 +105,22 @@ export function buildMcpServer(store: Store): McpServer {
     inputSchema: { query: z.string().min(1), limit: z.number().int().min(1).max(200).optional() },
     annotations: { readOnlyHint: true },
   }, async (a) => {
-    const r = store.listEntries({ q: a.query, limit: a.limit ?? 30 });
+    const r = store.listEntries({ kind: "all", q: a.query, limit: a.limit ?? 30 });
     return json({ ...r, items: r.items.map(entryOut) });
   });
 
   server.registerTool("get_entry", {
     title: "查看日记",
-    description: "按编号（如 261013-1）获取一篇日记：转写正文 body、纸质原稿 pages 与富媒体 media（含下载链接）。",
+    description: "按编号获取一篇日记（如 261013-1）或文章（如 A261013-1）：正文 body、纸质原稿 pages 与富媒体 media（含下载链接）。kind 字段区分 diary / article。",
     inputSchema: { id: z.string() },
     annotations: { readOnlyHint: true },
   }, async (a) => json(entryOut(store.getEntry(a.id))));
 
   server.registerTool("create_entry", {
     title: "新建日记（分配编号）",
-    description: `新建一篇日记并分配编号，可同时把图库中的文件归入：media_ids 作为富媒体组，page_ids 作为纸质原稿。date 不传则为今天（服务器当前日期 ${todayStr()}）。`,
+    description: `新建一篇日记（或 kind=article 的独立文章）并分配编号，可同时把图库中的文件归入：media_ids 作为富媒体组，page_ids 作为纸质原稿。date 不传则为今天（服务器当前日期 ${todayStr()}）。`,
     inputSchema: {
+      kind: z.enum(["diary", "article"]).optional().describe("默认 diary；article 为不对应纸质本的独立文章，编号形如 A261013-1"),
       date: dateSchema.optional(), title: z.string().optional(),
       note: z.string().optional().describe("文字备注，可选"),
       body: z.string().optional().describe(BODY_HELP),
@@ -129,7 +131,7 @@ export function buildMcpServer(store: Store): McpServer {
 
   server.registerTool("update_entry", {
     title: "修改日记",
-    description: "修改标题、转写正文、备注或标签（只更新传入的字段；body、tags 为整体替换）。编号和日期不可修改。",
+    description: "修改日记或文章的标题、正文、备注或标签（只更新传入的字段；body、tags 为整体替换）。编号和日期不可修改。",
     inputSchema: {
       id: z.string(), title: z.string().optional(), body: z.string().optional().describe(BODY_HELP),
       note: z.string().optional(), tags: z.array(z.string()).optional(),
@@ -138,13 +140,13 @@ export function buildMcpServer(store: Store): McpServer {
 
   server.registerTool("delete_entry", {
     title: "删除日记（移入回收站）",
-    description: "把日记移入回收站，其中的文件随之隐藏。可用 restore_entry 恢复。",
+    description: "把日记或文章移入回收站，其中的文件随之隐藏。可用 restore_entry 恢复。",
     inputSchema: { id: z.string() },
     annotations: { destructiveHint: false, idempotentHint: true },
   }, async (a) => json(store.trashEntry(a.id)));
 
   server.registerTool("restore_entry", {
-    title: "恢复日记", description: "从回收站恢复日记。", inputSchema: { id: z.string() },
+    title: "恢复日记", description: "从回收站恢复日记或文章。", inputSchema: { id: z.string() },
   }, async (a) => json(entryOut(store.restoreEntry(a.id))));
 
   // ---------- 图库 ----------

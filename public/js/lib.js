@@ -100,6 +100,7 @@ export const ICON = {
   fire: I('<path d="M12 21c4 0 6.5-2.7 6.5-6.2 0-3.6-2.6-5.7-3.8-8.8-.9 1.9-2 3-3.3 3.4.2-2.6-.8-4.8-2.6-6.4C8.7 6.6 5.5 9.4 5.5 14.6 5.5 18.2 8 21 12 21z"/>'),
   hdd: I('<rect x="3.5" y="13" width="17" height="6.5" rx="2"/><path d="M5 13l2.3-7.2A1.5 1.5 0 0 1 8.7 4.7h6.6a1.5 1.5 0 0 1 1.4 1.1L19 13M16.5 16.3h.01"/>'),
   menu: I('<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>'),
+  pen: I('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>'),
   list: I('<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>'),
 };
 // ---------- 图片尺寸 ----------
@@ -121,15 +122,22 @@ export function imgAttrs(a, sizes) {
   return `src="/files/${a.id}?w=${ws[Math.min(1, ws.length - 1)]}" srcset="${ws.map((w) => `/files/${a.id}?w=${w} ${w}w`).join(", ")}" sizes="${sizes}"`;
 }
 
-/** 一篇日记的两个页面：原稿与影像（详情）⇄ 文章（编辑），放在页面顶部切换 */
+/** 一篇日记的两个页面：原稿与影像（详情）⇄ 转写（编辑），放在页面顶部切换 */
 export const entryTabs = (id, active) => `<nav class="seg entry-tabs">${[
-  ["e", "原稿 · 影像", ICON.library], ["write", "文章", ICON.entries],
+  ["e", "原稿 · 影像", ICON.library], ["write", "转写", ICON.entries],
 ].map(([k, label, icon]) => `<a href="#/${k}/${encodeURIComponent(id)}" class="${k === active ? "on" : ""}">${icon}<span class="lb" data-t="${label}">${label}</span></a>`).join("")}</nav>`;
 
 /**
  * 日记两个页面共用的顶栏：左侧（返回、编号、切换）完全一致，切换时不会跳动
  * @param {{ state?: string, right?: string }} slots state 放在切换按钮后，right 放在最右侧
  */
+/** 独立文章的顶栏：没有原稿 / 文章切换 */
+export const articleHead = (title, { state = "", right = "" } = {}) => `<header class="doc-top">
+    <a class="icon-btn" href="#/articles" title="全部文章">${ICON.back}</a>
+    <nav class="crumb"><a href="#/articles">文章</a><span>/</span><b id="crumbTitle">${esc(title || "未命名")}</b></nav>
+    ${state}<span class="grow"></span>${right}
+  </header>`;
+
 export const entryHead = (id, active, { state = "", right = "" } = {}) => `<header class="doc-top">
     <a class="icon-btn" href="#/entries" title="全部日记">${ICON.back}</a>
     <nav class="crumb"><a href="#/entries">日记</a><span>/</span><b class="mono">${esc(id)}</b></nav>

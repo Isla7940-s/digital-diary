@@ -94,5 +94,7 @@ export function openDb(file = paths.db): DB {
   // v2 → v3：日记增加转写正文
   const entryCols = db.prepare("PRAGMA table_info(entries)").all() as { name: string }[];
   if (!entryCols.some((c) => c.name === "body")) db.exec("ALTER TABLE entries ADD COLUMN body TEXT NOT NULL DEFAULT ''");
+  // v3 → v4：区分纸质日记与独立文章（文章不对应纸质本，编号以 A 开头）
+  if (!entryCols.some((c) => c.name === "kind")) db.exec("ALTER TABLE entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'diary'");
   return db;
 }

@@ -11,11 +11,11 @@ export async function render({ app }) {
     </div>
     <div id="trashBody">
     ${empty ? `<div class="empty"><div class="art">${ICON.trash}</div><h3>回收站是空的</h3></div>` : ""}
-    ${t.entries.length ? `<div class="section-title" style="margin-top:6px"><h2>日记 <span class="count">连同其中的原稿与媒体</span></h2></div><div class="list">${t.entries.map((e) => `
+    ${t.entries.length ? `<div class="section-title" style="margin-top:6px"><h2>日记与文章 <span class="count">连同其中的原稿与媒体</span></h2></div><div class="list">${t.entries.map((e) => `
       <div class="card list-item" data-type="entries" data-id="${esc(e.id)}">
         <span class="idpill">${esc(e.id)}</span>
-        <div class="grow"><div>${esc(e.title || "未命名")}</div><div class="sub">删除于 ${new Date(e.deleted_at).toLocaleString()}</div></div>
-        <a class="btn sm" href="#/e/${esc(e.id)}">查看</a>
+        <div class="grow"><div>${e.kind === "article" ? `<span class="muted">文章 · </span>` : ""}${esc(e.title || "未命名")}</div><div class="sub">删除于 ${new Date(e.deleted_at).toLocaleString()}</div></div>
+        ${e.kind === "article" ? "" : `<a class="btn sm" href="#/e/${esc(e.id)}">查看</a>`}
         <button class="btn sm" data-act="restore">恢复</button>
         <button class="btn sm danger" data-act="purge">永久删除</button>
       </div>`).join("")}</div>` : ""}

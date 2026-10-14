@@ -319,8 +319,8 @@ export function createEditor(host, opts) {
   /** 当前所在的空行显示占位提示 */
   function markCurrent() {
     const b = curBlock();
-    $$(".blk.cur", root).forEach((x) => x !== b && x.classList.remove("cur", "empty"));
-    if (b && isText(b)) { b.classList.add("cur"); b.classList.toggle("empty", isEmpty(b)); }
+    $$(".blk.cur", root).forEach((x) => x !== b && x.classList.remove("cur", "blank"));
+    if (b && isText(b)) { b.classList.add("cur"); b.classList.toggle("blank", isEmpty(b)); }
     const docEmpty = root.children.length === 1 && isEmpty(root.firstElementChild) && root.firstElementChild.dataset.t === "p";
     root.classList.toggle("is-empty", docEmpty);
     placePlaceholder(docEmpty ? root.firstElementChild : b && isText(b) && isEmpty(b) ? b : null, docEmpty);
@@ -334,7 +334,7 @@ export function createEditor(host, opts) {
     if (!el) { placeholder.hidden = true; return; }
     const cs = getComputedStyle(el);
     const hr = host.getBoundingClientRect(), br = el.getBoundingClientRect();
-    placeholder.textContent = docEmpty ? PH_DOC : PH[el.dataset.t] || PH.p;
+    placeholder.textContent = docEmpty ? (opts.placeholder || PH_DOC) : PH[el.dataset.t] || PH.p;
     placeholder.style.left = `${br.left - hr.left + parseFloat(cs.paddingLeft)}px`;
     placeholder.style.top = `${br.top - hr.top + parseFloat(cs.paddingTop)}px`;
     placeholder.style.width = `${Math.max(0, br.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight))}px`;
@@ -1168,7 +1168,7 @@ export function createEditor(host, opts) {
     if (!el) { handle.hidden = true; return; }
     const hr = host.getBoundingClientRect(), br = el.getBoundingClientRect();
     const lh = isAtom(el) ? 28 : Math.min(parseFloat(getComputedStyle(el).lineHeight) || 26, br.height);
-    handle.style.top = `${br.top - hr.top + (isAtom(el) ? 6 : (lh - 26) / 2 + (parseFloat(getComputedStyle(el).paddingTop) || 0))}px`;
+    handle.style.top = `${br.top - hr.top + (isAtom(el) ? 6 : (lh - 28) / 2 + (parseFloat(getComputedStyle(el).paddingTop) || 0))}px`;
     handle.hidden = false;
   }
   const onMove = (e) => {

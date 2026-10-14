@@ -1,4 +1,4 @@
-// 日记详情（原稿与影像）：编号与二维码、纸质原稿、富媒体组、备注；顶部可切换到「文章」
+// 日记详情（原稿与影像）：编号与二维码、纸质原稿、富媒体组、备注；顶部可切换到「转写」
 import { $, api, esc, entryHead, ICON, on, debounce, toast, emit, copy, confirmSheet, fmtDate, weekday, parseTags } from "../lib.js";
 import { createGallery } from "../gallery.js";
 import { openViewer } from "../viewer.js";
@@ -12,18 +12,19 @@ export async function render({ app, params: [rawId] }) {
   catch (err) {
     if (err.status !== 404) throw err;
     app.innerHTML = `<div class="empty"><div class="art">${ICON.search}</div><h3>找不到编号 <span class="idpill">${esc(rawId)}</span></h3>
-      <p>检查一下纸上的编号是否写对了。</p><div style="display:flex;gap:8px"><a class="btn" href="#/scan">重新扫码</a><a class="btn" href="#/entries">全部日记</a></div></div>`;
+      <p>检查一下纸上的编号是否写对了。</p><div style="display:flex;gap:8px"><a class="btn" href="#/">返回图库</a><a class="btn" href="#/entries">全部日记</a></div></div>`;
     return;
   }
+  // 文章没有详情页，直接进编辑页
+  if (e.kind === "article") { location.replace(`#/a/${encodeURIComponent(e.id)}`); return; }
   const id = e.id;
   const trashed = !!e.deleted_at;
   setUploadTarget({ entryId: id, role: "media", label: `将加入 ${id} 的富媒体` });
-  document.body.classList.add("entry-mode");  // 与「文章」页共用顶栏布局，切换时不跳动
+  document.body.classList.add("entry-mode");  // 与「转写」页共用顶栏布局，切换时不跳动
 
   app.innerHTML = `
     ${entryHead(id, "e", {
-      right: `<a class="btn sm ghost" href="#/read/${encodeURIComponent(id)}">${ICON.book}<span>阅读</span></a>
-        <a class="btn sm ghost" href="#/print?ids=${encodeURIComponent(id)}">${ICON.print}<span>打印标签</span></a>`,
+      right: `<a class="btn sm ghost" href="#/read/${encodeURIComponent(id)}">${ICON.book}<span>阅读</span></a>`,
     })}
     ${trashed ? `<div class="trash-banner"><span>这篇日记在回收站中，内容暂时隐藏。</span><button class="btn sm" id="enRestore">恢复</button></div>` : ""}
     <section class="card hero">
@@ -38,7 +39,6 @@ export async function render({ app, params: [rawId] }) {
       </div>
       <div class="qr-card">
         <img src="/api/qr/${encodeURIComponent(id)}.svg" alt="编号二维码">
-        <div class="acts"><a class="btn sm" href="#/print?ids=${encodeURIComponent(id)}">${ICON.print}打印</a></div>
       </div>
     </section>
 

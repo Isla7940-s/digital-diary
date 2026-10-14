@@ -57,6 +57,27 @@ test("同一天多篇递增，删除后编号不复用", () => {
   assert.throws(() => store.createEntry({ date: "2026-02-30" }));
 });
 
+test("文章：单独编号，不混进日记列表、计数和统计", async () => {
+  const before = store.counts();
+  const a1 = store.createEntry({ kind: "article", date: "2026-03-05", title: "随笔" });
+  const d1 = store.createEntry({ date: "2026-03-05" });
+  const a2 = (await (await fetch(`${base}/api/entries`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "article", date: "2026-03-05" }) })).json());
+  assert.equal(a1.id, "A260305-1");
+  assert.equal(a1.kind, "article");
+  assert.equal(d1.id, "260305-1", "文章不占用纸质日记的编号");
+  assert.equal(a2.id, "A260305-2");
+  assert.ok(!store.listEntries().items.some((x) => x.id === a1.id), "日记列表默认不含文章");
+  const arts = await (await fetch(`${base}/api/entries?kind=article`)).json();
+  assert.deepEqual(arts.items.map((x: { id: string }) => x.id).sort(), [a1.id, a2.id]);
+  const c = store.counts();
+  assert.equal(c.entries, before.entries + 1);
+  assert.equal(c.articles, before.articles + 2);
+  store.updateEntry(a1.id, { body: "春天的风" });
+  assert.ok(store.listEntries({ kind: "all", q: "春天的风" }).items.some((x) => x.id === a1.id));
+  assert.ok(!store.stats().entryDays.some((d) => d.chars >= 4 && d.day === "2026-03-05"), "统计只算纸质日记");
+  for (const id of [a1.id, a2.id, d1.id]) { store.trashEntry(id); store.purgeEntry(id); }
+});
+
 test("中文搜索与标签", () => {
   const e = store.createEntry({ date: "2026-03-01", title: "西湖边的下午", tags: ["旅行", "#杭州"] });
   assert.deepEqual(e.tags, ["旅行", "杭州"]);
@@ -168,9 +189,8 @@ test("MCP：图库、分配编号、原稿、回收站，且每次调用都被�
   await client.close();
 
   const s = store.stats();
-  assert.ok(s.mcpTools.some((t) => t.tool === "add_media" && t.count === 3));
-  assert.ok(s.mcpTools.some((t) => t.tool === "get_entry" && t.errors === 1));
   assert.ok(s.mcpDays.length >= 1);
+  assert.ok(s.mcpDays.some((d) => d.errors >= 1));
 });
 
 test("正文：Markdown 转纯文字与影像引用", () => {
@@ -218,6 +238,7 @@ test("正文：保存、摘录、搜索、可阅读筛选、旧库迁移", async
   old.close();
   const migrated = openDb(oldFile);
   assert.equal(new Store(migrated).getEntry("250101-1").body, "");
+  assert.equal(new Store(migrated).getEntry("250101-1").kind, "diary", "旧日记迁移后都是纸质日记");
   migrated.close();
 });
 
@@ -272,4 +293,36 @@ test("统计与导出", async () => {
   const res = await fetch(`${base}/api/export.zip`);
   assert.equal(res.status, 200);
   assert.equal(Buffer.from(await res.arrayBuffer()).subarray(0, 2).toString(), "PK");
+});
+
+test("导出分卷：按年、按月、按大小", async () => {
+  store.createEntry({ date: "2024-03-05", body: "很早的一篇" });
+  store.createEntry({ date: "2024-07-09", body: "同一年另一篇" });
+  const plan = async (q: string) => (await (await fetch(`${base}/api/export/plan?${q}`)).json()).volumes as { n: number; label: string; entries: number; name: string }[];
+
+  const none = await plan("split=none");
+  assert.equal(none.length, 1);
+  assert.match(none[0].name, /^diary-export-\d{8}\.zip$/);
+
+  const years = await plan("split=year");
+  assert.equal(years[0].label, "2024");
+  assert.equal(years[0].entries, 2);
+  assert.ok(years.length >= 2);
+  assert.match(years[0].name, /-2024\.zip$/);
+
+  const months = await plan("split=month");
+  assert.deepEqual(months.slice(0, 2).map((v) => v.label), ["2024-03", "2024-07"]);
+
+  // 上限下限是 50 MB，测试数据很小，全部装进一卷；同一篇日记永远不拆开
+  const bySize = await plan("split=size&size=50");
+  assert.equal(bySize.length, 1);
+  assert.equal(bySize.reduce((t, v) => t + v.entries, 0), none[0].entries);
+
+  const res = await fetch(`${base}/api/export.zip?split=year&vol=1`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-disposition") ?? "", /2024\.zip/);
+  const zip = Buffer.from(await res.arrayBuffer());
+  assert.ok(zip.includes(Buffer.from("日记/2024/2024-03-05/")));
+  assert.ok(!zip.includes(Buffer.from("日记/2026/")), "第 1 卷只含 2024 年");
+  assert.equal((await fetch(`${base}/api/export.zip?split=year&vol=99`)).status, 404);
 });

@@ -1,5 +1,5 @@
-// 统计：记录热力图、AI 调用热力图、媒体构成与月度趋势
-import { $, $$, api, esc, ICON, fmtNum, fmtSize, fmtHours, dayKey, showTip, hideTip } from "../lib.js";
+// 统计：记录热力图（按字数）、AI 调用热力图、媒体构成与月度趋势
+import { $, $$, api, ICON, fmtNum, fmtSize, fmtHours, dayKey, showTip, hideTip } from "../lib.js";
 
 const KINDS = [
   { k: "image", label: "照片", color: "var(--k-image)" },
@@ -53,7 +53,7 @@ function heatmap(el, byDay, { ramp, unit, label }) {
       if (!c) return hideTip();
       const r = c.getBoundingClientRect();
       const [y, m, d] = c.dataset.d.split("-");
-      showTip(r.left + r.width / 2, r.top, `<b>${c.dataset.v === "0" ? "无" : `${c.dataset.v} ${unit}`}</b> ${label}<br>${y}年${+m}月${+d}日`);
+      showTip(r.left + r.width / 2, r.top, `<b>${c.dataset.v === "0" ? "无" : `${fmtNum(+c.dataset.v)} ${unit}`}</b> ${label}<br>${y}年${+m}月${+d}日`);
     });
     $(".cells", el).addEventListener("mouseleave", hideTip);
   };
@@ -102,14 +102,6 @@ export async function render({ app }) {
       <div class="panel-head"><h2>AI 调用</h2><span class="sub">通过 MCP 连接器的每一次工具调用</span></div>
       <div id="heatB"></div>
       <div class="heat-foot"><span>过去一年 <b style="color:var(--ink)">${fmtNum(mcpYear)}</b> 次调用 · ${s.mcpDays.length} 天活跃${mcpYear ? ` · 成功率 ${(((mcpYear - mcpErr) / mcpYear) * 100).toFixed(1)}%` : ""}</span>${legend("blue")}</div>
-      <div class="two-col" style="margin-top:22px">
-        <div><div class="panel-head" style="margin-bottom:10px"><h2 style="font-size:14px">常用工具</h2></div>
-          <div class="hbars" id="tools"></div></div>
-        <div><div class="panel-head" style="margin-bottom:10px"><h2 style="font-size:14px">时段分布</h2><span class="sub">按小时</span></div>
-          <div class="cols hours" id="hours"></div><div class="cols-x"><span>0时</span><span>6时</span><span>12时</span><span>18时</span><span>23时</span></div>
-          <div class="panel-head" style="margin:18px 0 6px"><h2 style="font-size:14px">最近调用</h2></div>
-          <div class="recent" id="recent"></div></div>
-      </div>
     </section>
 
     <div class="two-col">
@@ -126,12 +118,13 @@ export async function render({ app }) {
     </div>`;
 
   // ---------- 热力图 ----------
-  const entryMap = new Map(s.entryDays.map((d) => [d.day, d.count]));
+  const entryMap = new Map(s.entryDays.map((d) => [d.day, d.chars]));
+  const yearChars = s.entryDays.reduce((t, d) => t + d.chars, 0);
   const mediaMap = new Map(s.mediaDays.map((d) => [d.day, d.count]));
-  let offA = heatmap($("#heatA"), entryMap, { ramp: "amber", unit: "篇", label: "日记" });
+  let offA = heatmap($("#heatA"), entryMap, { ramp: "amber", unit: "字", label: "日记" });
   const sumA = (mode) => {
     $("#heatSum").innerHTML = mode === "entries"
-      ? `过去一年记录了 <b style="color:var(--ink)">${fmtNum(year)}</b> 篇，${activeDays} 天有记录`
+      ? `过去一年写了 <b style="color:var(--ink)">${fmtNum(yearChars)}</b> 字（${fmtNum(year)} 篇），${activeDays} 天有记录`
       : `过去一年拍摄/录制了 <b style="color:var(--ink)">${fmtNum(s.mediaDays.reduce((t, d) => t + d.count, 0))}</b> 项影像`;
   };
   sumA("entries");
@@ -140,22 +133,11 @@ export async function render({ app }) {
     $$("#heatSeg button").forEach((x) => x.classList.toggle("on", x === b));
     offA();
     offA = b.dataset.v === "entries"
-      ? heatmap($("#heatA"), entryMap, { ramp: "amber", unit: "篇", label: "日记" })
+      ? heatmap($("#heatA"), entryMap, { ramp: "amber", unit: "字", label: "日记" })
       : heatmap($("#heatA"), mediaMap, { ramp: "amber", unit: "项", label: "影像" });
     sumA(b.dataset.v);
   });
   const offB = heatmap($("#heatB"), new Map(s.mcpDays.map((d) => [d.day, d.count])), { ramp: "blue", unit: "次", label: "AI 调用" });
-
-  // ---------- AI：工具、时段、最近 ----------
-  const maxTool = Math.max(1, ...s.mcpTools.map((t) => t.count));
-  $("#tools").innerHTML = s.mcpTools.length ? s.mcpTools.slice(0, 10).map((t) => `<div class="hbar" data-tip="${esc(t.tool)}|${t.count}|${t.errors}|${t.avg_ms}">
-      <span class="nm" title="${esc(t.tool)}">${esc(t.tool)}</span><span class="tr"><i style="width:${(t.count / maxTool) * 100}%"></i></span><span class="v">${fmtNum(t.count)}</span></div>`).join("")
-    : `<p class="muted" style="font-size:13px">还没有 AI 调用记录。在「导出与连接」里把 MCP 连接到 Claude 后，这里会显示统计。</p>`;
-  const hours = Array.from({ length: 24 }, (_, h) => s.mcpHours.find((x) => x.hour === h)?.count || 0);
-  const maxH = Math.max(1, ...hours);
-  $("#hours").innerHTML = hours.map((v, h) => `<div class="col" data-h="${h}" data-v="${v}">${v ? `<i style="height:${(v / maxH) * 100}%;background:var(--blue-3)"></i>` : ""}</div>`).join("");
-  $("#recent").innerHTML = s.mcpRecent.length ? s.mcpRecent.map((r) => `<div><span class="t">${r.ts.slice(5, 16).replace("T", " ")}</span><span class="k">${esc(r.tool)}</span>
-      <span class="${r.ok ? "muted" : "err"}">${r.ok ? `${r.ms} ms` : "失败"}</span></div>`).join("") : `<p class="muted" style="font-size:13px">暂无</p>`;
 
   // ---------- 媒体构成 ----------
   const totalCount = KINDS.reduce((t, k) => t + kv[k.k].count, 0);
@@ -191,16 +173,8 @@ export async function render({ app }) {
       return showTip(rect.left + rect.width / 2, rect.top, `<b>${m.slice(0, 4)}年${+m.slice(5)}月</b>` + KINDS.map((k) =>
         `<div class="row"><i style="background:${k.color}"></i>${k.label}<span style="margin-left:auto;padding-left:12px"><b>${r[k.k]}</b></span></div>`).join(""));
     }
-    const h = e.target.closest("#hours .col");
-    if (h) { const rect = h.getBoundingClientRect(); return showTip(rect.left + rect.width / 2, rect.top, `${h.dataset.h}:00–${h.dataset.h}:59 · <b>${h.dataset.v}</b> 次`); }
     const st = e.target.closest("#stack i[data-k]");
     if (st) { const rect = st.getBoundingClientRect(); return showTip(e.clientX, rect.top, `${st.dataset.k} <b>${fmtNum(st.dataset.v)}</b> 项`); }
-    const tb = e.target.closest(".hbar[data-tip]");
-    if (tb) {
-      const [n, c, er, ms] = tb.dataset.tip.split("|");
-      const rect = tb.getBoundingClientRect();
-      return showTip(rect.left + rect.width / 2, rect.top, `<b>${esc(n)}</b> · ${c} 次 · 平均 ${ms} ms${Number(er) ? ` · 失败 ${er}` : ""}`);
-    }
     hideTip();
   };
   const panelEls = $$(".panel", app);

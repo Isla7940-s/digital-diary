@@ -11,7 +11,7 @@ import { config, paths } from "./config.js";
 import { openDb } from "./db.js";
 import { Store, NotFound, BadInput, Conflict } from "./store.js";
 import { storeFile, viewImage, warmViews, viewsIdle, VIEW_WIDTHS } from "./media.js";
-import { exportZip } from "./export.js";
+import { exportZip, planVolumes, volumeName, type ExportOptions, type Split } from "./export.js";
 import { buildMcpServer } from "./mcp.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -54,8 +54,9 @@ export function createApp(store: Store) {
   // 日记
   api.get("/entries", (req, res) => {
     const q = req.query;
+    const kind = q.kind === "article" || q.kind === "all" ? q.kind : undefined;
     res.json(store.listEntries({
-      from: str(q.from), to: str(q.to), tag: str(q.tag), q: str(q.q), hasPages: bool(q.pages), readable: bool(q.readable),
+      kind, from: str(q.from), to: str(q.to), tag: str(q.tag), q: str(q.q), hasPages: bool(q.pages), readable: bool(q.readable),
       limit: num(q.limit), offset: num(q.offset),
     }));
   });
@@ -118,11 +119,26 @@ export function createApp(store: Store) {
     res.type("image/svg+xml").set("Cache-Control", "public, max-age=31536000, immutable").send(svg);
   });
 
-  api.get("/export.zip", async (_req, res) => {
+  // 导出：?split=none|year|month|size&size=MB&vol=N；先用 /export/plan 拿到分卷列表，再逐卷下载
+  const exportOpts = (q: Record<string, unknown>): ExportOptions => ({
+    split: (["year", "month", "size"].includes(String(q.split)) ? q.split : "none") as Split,
+    sizeMB: Number(q.size) || undefined,
+  });
+  const exportStamp = () => {
     const d = new Date();
-    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-    res.attachment(`diary-export-${stamp}.zip`);
-    await exportZip(store, res);
+    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  };
+  api.get("/export/plan", (req, res) => {
+    const opts = exportOpts(req.query), stamp = exportStamp();
+    const vols = planVolumes(store, opts);
+    res.json({ split: opts.split, volumes: vols.map((v) => ({ n: v.n, label: v.label, entries: v.entries.length, loose: v.loose.length, files: v.files, bytes: v.bytes, name: volumeName(stamp, opts, v, vols.length) })) });
+  });
+  api.get("/export.zip", async (req, res) => {
+    const opts = exportOpts(req.query), vol = Math.max(1, Number(req.query.vol) || 1);
+    const vols = planVolumes(store, opts);
+    if (!vols[vol - 1]) return res.status(404).json({ error: `没有第 ${vol} 卷（共 ${vols.length} 卷）` });
+    res.attachment(volumeName(exportStamp(), opts, vols[vol - 1], vols.length));
+    await exportZip(store, res, opts, vol);
   });
 
   app.use("/api", api);

@@ -59,11 +59,10 @@ export function createdDialog(e) {
         <span class="ok">${ICON.check}编号已生成</span>
         <div class="cid">${esc(e.id)}</div>
         <img src="/api/qr/${encodeURIComponent(e.id)}.svg" alt="二维码">
-        <p>${fmtDate(e.date)} ${weekday(e.date)}${e.title ? ` · ${esc(e.title)}` : ""}<br>把编号写在纸质日记上，或打印二维码贴上</p>
+        <p>${fmtDate(e.date)} ${weekday(e.date)}${e.title ? ` · ${esc(e.title)}` : ""}<br>把编号写在纸质日记上</p>
       </div>
       <div class="sheet-actions" style="justify-content:center">
         <button class="btn" data-copy>${ICON.copy}复制编号</button>
-        <a class="btn" href="#/print?ids=${encodeURIComponent(e.id)}" data-go>${ICON.print}打印标签</a>
         <a class="btn primary" href="#/e/${encodeURIComponent(e.id)}" data-go>查看日记</a>
       </div>`,
     mount: (el, close) => {

@@ -14,7 +14,7 @@ export async function render({ app, ungrouped = false }) {
       <div><h1>${ungrouped ? "未归组" : "图库"}</h1><div class="sub" id="libSub">&nbsp;</div></div>
       <div class="actions">
         <button class="btn" id="libSelect">${ICON.select}选择</button>
-        <button class="btn primary" id="libUpload">${ICON.upload}上传</button>
+        <button class="btn primary hide-m" id="libUpload">${ICON.upload}上传</button>
       </div>
     </div>
     <div class="toolbar">

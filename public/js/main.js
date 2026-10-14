@@ -9,11 +9,11 @@ const NAV = [
   { href: "#/", key: "library", icon: "library", label: "图库", count: "media" },
   { href: "#/entries", key: "entries", icon: "entries", label: "日记", count: "entries" },
   { href: "#/read", key: "read", icon: "book", label: "阅读", count: "pages", unit: "页" },
+  { href: "#/articles", key: "articles", icon: "pen", label: "文章", count: "articles" },
   { href: "#/stats", key: "stats", icon: "stats", label: "统计" },
 ];
 const TOOLS = [
-  { href: "#/scan", key: "scan", icon: "scan", label: "扫码 / 输入编号" },
-  { href: "#/print", key: "print", icon: "print", label: "打印标签" },
+  // 扫码 / 打印标签暂时隐藏（路由仍保留：#/scan、#/print）
   { href: "#/trash", key: "trash", icon: "trash", label: "回收站", count: "trash" },
   { href: "#/settings", key: "settings", icon: "settings", label: "导出与连接" },
 ];
@@ -25,6 +25,8 @@ const routes = [
   [/^\/e\/([^/]+)$/, "entries", () => import("./views/entry.js")],
   [/^\/write\/([^/]+)$/, "entries", () => import("./views/write.js")],
   [/^\/read(?:\/([^/]+))?$/, "read", () => import("./views/reader.js")],
+  [/^\/articles$/, "articles", () => import("./views/articles.js")],
+  [/^\/a\/([^/]+)$/, "articles", () => import("./views/write.js"), { article: true }],
   [/^\/stats$/, "stats", () => import("./views/stats.js")],
   [/^\/scan$/, "scan", () => import("./views/scan.js")],
   [/^\/print$/, "print", () => import("./views/print.js")],
@@ -44,9 +46,11 @@ function renderNav() {
   $("#sideNav").innerHTML = NAV.map((n) => item(n) + (n.key === "library"
     ? item({ href: "#/unsorted", key: "unsorted", label: "未归组", count: "ungrouped" }, true) : "")).join("")
     + `<div class="group-label">工具</div>` + TOOLS.map((n) => item(n)).join("");
-  $("#tabbar").innerHTML = [NAV[0], NAV[1], { href: "#/scan", key: "scan", icon: "scan", label: "扫码" }, NAV[2], NAV[3]]
-    .map((n) => `<a href="${n.href}" class="${n.key === active ? "active" : ""} ${n.key === "scan" ? "scan" : ""}">
-      ${n.key === "scan" ? `<span class="ring">${ICON.scan}</span>` : ICON[n.icon]}<span>${n.label}</span></a>`).join("");
+  const nav = (k) => NAV.find((n) => n.key === k);
+  const tab = (n) => `<a href="${n.href}" class="${n.key === active ? "active" : ""}">${ICON[n.icon]}<span>${n.label}</span></a>`;
+  $("#tabbar").innerHTML = tab(nav("library")) + tab(nav("entries"))
+    + `<button type="button" class="tab-main" data-upload><span class="ring">${ICON.upload}</span><span>上传</span></button>`
+    + tab(nav("read")) + tab(nav("stats"));
 }
 
 async function refreshCounts() {
@@ -79,6 +83,7 @@ const doUpload = async () => {
 };
 $("#sideUpload").addEventListener("click", doUpload);
 $("#mUpload").addEventListener("click", doUpload);
+$("#tabbar").addEventListener("click", (e) => { if (e.target.closest("[data-upload]")) doUpload(); });
 
 // ---------- 手机：禁止整页双指缩放（iOS Safari 不认 user-scalable=no）；图像查看器有自己的缩放 ----------
 document.addEventListener("gesturestart", (e) => e.preventDefault());
@@ -104,7 +109,8 @@ addEventListener("keydown", (e) => {
 $("#mMore").addEventListener("click", () => sheet({
   html: `<div class="menu-list">
       <a href="#/unsorted" data-x>${ICON.library}未归组<span class="muted" style="margin-left:auto">${counts.ungrouped ?? ""}</span></a>
-      ${TOOLS.filter((t) => t.key !== "scan").map((t) => `<a href="${t.href}" data-x>${ICON[t.icon]}${t.label}</a>`).join("")}
+      <a href="#/articles" data-x>${ICON.pen}文章<span class="muted" style="margin-left:auto">${counts.articles ?? ""}</span></a>
+      ${TOOLS.map((t) => `<a href="${t.href}" data-x>${ICON[t.icon]}${t.label}</a>`).join("")}
       <button data-close>${ICON.close}关闭</button></div>`,
   mount: (el, close) => $$("[data-x]", el).forEach((a) => a.addEventListener("click", () => close())),
 }));

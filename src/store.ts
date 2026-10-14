@@ -5,6 +5,8 @@ import { paths } from "./config.js";
 import { localIso, removeStored, removeViews, type StoredFile, type Kind } from "./media.js";
 
 export type Role = "media" | "page";
+/** diary 纸质日记 | article 独立文章（没有纸质原稿，只在编辑页写和看） */
+export type EntryKind = "diary" | "article";
 
 export interface Attachment {
   id: string; entry_id: string | null; role: Role; kind: Kind; original_name: string; mime: string; size: number;
@@ -13,7 +15,7 @@ export interface Attachment {
 }
 
 export interface Entry {
-  id: string; date: string; seq: number; title: string; note: string; body: string; tags: string[];
+  id: string; kind: EntryKind; date: string; seq: number; title: string; note: string; body: string; tags: string[];
   created_at: string; updated_at: string; deleted_at: string | null;
 }
 
@@ -50,9 +52,9 @@ export function todayStr(d = new Date()): string {
   return localIso(d).slice(0, 10);
 }
 
-/** 2026-10-13 + 1 → 261013-1 */
-export function makeId(date: string, seq: number): string {
-  return `${date.slice(2, 4)}${date.slice(5, 7)}${date.slice(8, 10)}-${seq}`;
+/** 2026-10-13 + 1 → 261013-1；文章加 A 前缀：A261013-1 */
+export function makeId(date: string, seq: number, kind: EntryKind = "diary"): string {
+  return `${kind === "article" ? "A" : ""}${date.slice(2, 4)}${date.slice(5, 7)}${date.slice(8, 10)}-${seq}`;
 }
 
 /** 容错：全角横线、空格、下划线等都当作分隔符 */
@@ -119,17 +121,20 @@ export class Store {
   // ---------- 日记 ----------
 
   /** 新建日记并分配编号；可同时把图库中已选的媒体归入这篇日记 */
-  createEntry(input: { date?: string; title?: string; note?: string; body?: string; tags?: string[]; media_ids?: string[]; page_ids?: string[] } = {}): EntryWithAttachments {
+  createEntry(input: { kind?: EntryKind; date?: string; title?: string; note?: string; body?: string; tags?: string[]; media_ids?: string[]; page_ids?: string[] } = {}): EntryWithAttachments {
     const date = input.date ?? todayStr();
     if (!validDate(date)) throw new BadInput(`日期格式应为 YYYY-MM-DD：${date}`);
+    const kind: EntryKind = input.kind === "article" ? "article" : "diary";
+    // 文章的序号单独计数（计数表里以 A: 前缀区分），不占用纸质日记的编号
+    const counter = kind === "article" ? `A:${date}` : date;
     const id = this.db.transaction(() => {
-      const row = this.db.prepare("SELECT last_seq FROM day_counters WHERE date = ?").get(date) as { last_seq: number } | undefined;
+      const row = this.db.prepare("SELECT last_seq FROM day_counters WHERE date = ?").get(counter) as { last_seq: number } | undefined;
       const seq = (row?.last_seq ?? 0) + 1;
-      this.db.prepare("INSERT INTO day_counters(date, last_seq) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET last_seq = excluded.last_seq").run(date, seq);
-      const id = makeId(date, seq);
+      this.db.prepare("INSERT INTO day_counters(date, last_seq) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET last_seq = excluded.last_seq").run(counter, seq);
+      const id = makeId(date, seq, kind);
       const now = nowIso();
-      this.db.prepare(`INSERT INTO entries(id, date, seq, title, note, body, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
-        .run(id, date, seq, (input.title ?? "").trim(), input.note ?? "", cleanBody(input.body), JSON.stringify(cleanTags(input.tags)), now, now);
+      this.db.prepare(`INSERT INTO entries(id, kind, date, seq, title, note, body, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, kind, date, seq, (input.title ?? "").trim(), input.note ?? "", cleanBody(input.body), JSON.stringify(cleanTags(input.tags)), now, now);
       if (input.media_ids?.length) this.assign(input.media_ids, id, "media");
       if (input.page_ids?.length) this.assign(input.page_ids, id, "page");
       this.refreshFts(id);
@@ -152,9 +157,11 @@ export class Store {
     return { ...e, pages: atts.filter((a) => a.role === "page"), media: atts.filter((a) => a.role === "media") };
   }
 
-  listEntries(opts: { from?: string; to?: string; tag?: string; q?: string; hasPages?: boolean; readable?: boolean; limit?: number; offset?: number } = {}) {
+  /** kind 默认只列纸质日记；"all" 不区分 */
+  listEntries(opts: { kind?: EntryKind | "all"; from?: string; to?: string; tag?: string; q?: string; hasPages?: boolean; readable?: boolean; limit?: number; offset?: number } = {}) {
     const where = ["e.deleted_at IS NULL"];
     const args: unknown[] = [];
+    if (opts.kind !== "all") { where.push("e.kind = ?"); args.push(opts.kind ?? "diary"); }
     if (opts.from) { where.push("e.date >= ?"); args.push(opts.from); }
     if (opts.to) { where.push("e.date <= ?"); args.push(opts.to); }
     if (opts.tag) { where.push("EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)"); args.push(opts.tag); }
@@ -170,7 +177,7 @@ export class Store {
     const limit = Math.min(Math.max(opts.limit ?? 30, 1), 500);
     const offset = Math.max(opts.offset ?? 0, 0);
     const total = (this.db.prepare(`SELECT COUNT(*) n FROM entries e WHERE ${sqlWhere}`).get(...args) as { n: number }).n;
-    const rows = this.db.prepare(`SELECT e.* FROM entries e WHERE ${sqlWhere} ORDER BY e.date DESC, e.seq DESC LIMIT ? OFFSET ?`)
+    const rows = this.db.prepare(`SELECT e.* FROM entries e WHERE ${sqlWhere} ORDER BY ${opts.kind === "article" ? "e.updated_at DESC" : "e.date DESC, e.seq DESC"} LIMIT ? OFFSET ?`)
       .all(...args, limit, offset) as Row[];
     return { total, limit, offset, items: rows.map((r) => this.summarize(rowToEntry(r))) };
   }
@@ -199,7 +206,7 @@ export class Store {
   updateEntry(id: string, patch: { title?: string; note?: string; body?: string; body_base?: string; tags?: string[] }): EntryWithAttachments {
     const e = this.entryRow(id);
     if (patch.body !== undefined && patch.body_base !== undefined && bodyHash(e.body) !== patch.body_base) {
-      throw new Conflict("这篇文章已在别处被修改", e.body);
+      throw new Conflict("正文已在别处被修改", e.body);
     }
     const next = {
       title: patch.title !== undefined ? String(patch.title).trim() : e.title,
@@ -392,7 +399,7 @@ export class Store {
   listTags() {
     return this.db.prepare(
       `SELECT j.value AS tag, COUNT(*) AS count FROM entries e, json_each(e.tags) j
-       WHERE e.deleted_at IS NULL GROUP BY j.value ORDER BY count DESC, tag`,
+       WHERE e.deleted_at IS NULL AND e.kind = 'diary' GROUP BY j.value ORDER BY count DESC, tag`,
     ).all() as { tag: string; count: number }[];
   }
 
@@ -413,7 +420,8 @@ export class Store {
     return {
       media: n(`SELECT COUNT(*) n FROM attachments a WHERE ${VISIBLE} AND a.role = 'media'`),
       ungrouped: n(`SELECT COUNT(*) n FROM attachments a WHERE ${VISIBLE} AND a.entry_id IS NULL`),
-      entries: n("SELECT COUNT(*) n FROM entries WHERE deleted_at IS NULL"),
+      entries: n("SELECT COUNT(*) n FROM entries WHERE deleted_at IS NULL AND kind = 'diary'"),
+      articles: n("SELECT COUNT(*) n FROM entries WHERE deleted_at IS NULL AND kind = 'article'"),
       pages: n(`SELECT COUNT(*) n FROM attachments a WHERE ${VISIBLE} AND a.role = 'page'`),
       trash: n("SELECT COUNT(*) n FROM entries WHERE deleted_at IS NOT NULL")
         + n("SELECT COUNT(*) n FROM attachments a WHERE a.deleted_at IS NOT NULL AND (a.entry_id IS NULL OR a.entry_id IN (SELECT id FROM entries WHERE deleted_at IS NULL))"),
@@ -427,26 +435,27 @@ export class Store {
       `SELECT a.kind, COUNT(*) count, SUM(a.size) bytes, COALESCE(SUM(a.duration), 0) seconds FROM attachments a
        WHERE ${VISIBLE} AND a.role = 'media' GROUP BY a.kind`);
     const pages = all<{ count: number; bytes: number }>(`SELECT COUNT(*) count, COALESCE(SUM(a.size),0) bytes FROM attachments a WHERE ${VISIBLE} AND a.role = 'page'`)[0];
-    const entryDays = all<{ day: string; count: number }>(
-      "SELECT date day, COUNT(*) count FROM entries WHERE deleted_at IS NULL AND date >= ? GROUP BY date", since);
+    // 每天的篇数与字数（字数口径与列表的 body_chars 一致）
+    const byDay = new Map<string, { day: string; count: number; chars: number }>();
+    for (const r of all<{ date: string; body: string }>("SELECT date, body FROM entries WHERE deleted_at IS NULL AND kind = 'diary' AND date >= ?", since)) {
+      const d = byDay.get(r.date) ?? byDay.set(r.date, { day: r.date, count: 0, chars: 0 }).get(r.date)!;
+      d.count++;
+      d.chars += plainText(r.body).replace(/\s/g, "").length;
+    }
+    const entryDays = [...byDay.values()];
     const mediaDays = all<{ day: string; count: number }>(
       `SELECT substr(a.taken_at,1,10) day, COUNT(*) count FROM attachments a WHERE ${VISIBLE} AND a.role = 'media' AND a.taken_at >= ? GROUP BY day`, since);
     const mcpDays = all<{ day: string; count: number; errors: number }>(
       "SELECT substr(ts,1,10) day, COUNT(*) count, SUM(1 - ok) errors FROM mcp_calls WHERE ts >= ? GROUP BY day", since);
-    const mcpTools = all<{ tool: string; count: number; errors: number; avg_ms: number }>(
-      "SELECT tool, COUNT(*) count, SUM(1 - ok) errors, CAST(AVG(ms) AS INTEGER) avg_ms FROM mcp_calls WHERE ts >= ? GROUP BY tool ORDER BY count DESC", since);
-    const mcpHours = all<{ hour: number; count: number }>(
-      "SELECT CAST(substr(ts,12,2) AS INTEGER) hour, COUNT(*) count FROM mcp_calls WHERE ts >= ? GROUP BY hour", since);
-    const mcpRecent = all<{ ts: string; tool: string; ok: number; ms: number }>("SELECT ts, tool, ok, ms FROM mcp_calls ORDER BY id DESC LIMIT 12");
     const monthStart = todayStr(new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1)).slice(0, 7);
     const months = all<{ month: string; kind: Kind; count: number }>(
       `SELECT substr(a.taken_at,1,7) month, a.kind, COUNT(*) count FROM attachments a
        WHERE ${VISIBLE} AND a.role = 'media' AND a.taken_at >= ? GROUP BY month, a.kind`, monthStart);
     const entryMonths = all<{ month: string; count: number }>(
-      "SELECT substr(date,1,7) month, COUNT(*) count FROM entries WHERE deleted_at IS NULL AND date >= ? GROUP BY month", monthStart);
+      "SELECT substr(date,1,7) month, COUNT(*) count FROM entries WHERE deleted_at IS NULL AND kind = 'diary' AND date >= ? GROUP BY month", monthStart);
 
     // 连续记日记天数（截至今天或昨天）
-    const dates = new Set(all<{ date: string }>("SELECT DISTINCT date FROM entries WHERE deleted_at IS NULL").map((r) => r.date));
+    const dates = new Set(all<{ date: string }>("SELECT DISTINCT date FROM entries WHERE deleted_at IS NULL AND kind = 'diary'").map((r) => r.date));
     let streak = 0;
     const d = new Date();
     if (!dates.has(todayStr(d))) d.setDate(d.getDate() - 1);
@@ -454,9 +463,9 @@ export class Store {
 
     return {
       today: todayStr(), since, streak, counts: this.counts(),
-      kinds, pages, entryDays, mediaDays, mcpDays, mcpTools, mcpHours, mcpRecent, months, entryMonths,
+      kinds, pages, entryDays, mediaDays, mcpDays, months, entryMonths,
       mcpTotal: (this.db.prepare("SELECT COUNT(*) n FROM mcp_calls").get() as { n: number }).n,
-      first_entry: (this.db.prepare("SELECT MIN(date) d FROM entries WHERE deleted_at IS NULL").get() as { d: string | null }).d,
+      first_entry: (this.db.prepare("SELECT MIN(date) d FROM entries WHERE deleted_at IS NULL AND kind = 'diary'").get() as { d: string | null }).d,
     };
   }
 
