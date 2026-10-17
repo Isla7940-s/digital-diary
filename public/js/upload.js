@@ -47,7 +47,9 @@ async function run() {
     try {
       q.result = await send(q);
       q.state = "done";
-      emit("uploaded", q.result);
+      // Apple 实况照片的 MOV 已并进照片：照片之前已经插入过，不再当作新文件
+      if (q.result?.merged) q.result = null;
+      else emit("uploaded", q.result);
     } catch (e) { q.state = "error"; q.error = e.message; }
     render();
     q.resolve(q.result ?? null);

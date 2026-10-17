@@ -1,14 +1,15 @@
 // 相册式网格：按天分组、无限滚动、多选（Shift 连选 / 手机长按）
 import { $, $$, esc, ICON, fmtDur, fmtDay, weekday, extOf, waveSvg } from "./lib.js";
+import { isLive, liveTag } from "./live.js";
 
 export function tileHtml(a, { showGroup = true } = {}) {
   const cls = ["tile", a.kind, a.caption ? "has-caption" : ""].join(" ");
   const group = showGroup && a.entry_id ? `<span class="tl ${a.role === "page" ? "page" : ""}">${esc(a.entry_id)}</span>` : "";
   const check = `<span class="check">${ICON.check}</span>`;
-  const attrs = `class="${cls}" data-id="${a.id}" title="${esc(a.caption || a.original_name)}"`;
+  const attrs = `class="${cls}" data-id="${a.id}"${isLive(a) ? ` data-live="${a.id}"` : ""} title="${esc(a.caption || a.original_name)}"`;
   if (a.kind === "image" || (a.kind === "video" && a.thumb)) {
     const src = a.thumb ? `/thumbs/${a.id}` : `/files/${a.id}`;
-    const dur = a.kind === "video" ? `<span class="br">${ICON.play}${fmtDur(a.duration)}</span>` : "";
+    const dur = a.kind === "video" ? `<span class="br">${ICON.play}${fmtDur(a.duration)}</span>` : isLive(a) ? liveTag() : "";
     return `<div ${attrs}><img loading="lazy" decoding="async" src="${src}" alt="">${group}${dur}${check}</div>`;
   }
   if (a.kind === "video") return `<div ${attrs} style="display:grid;place-items:center;color:var(--accent-ink)">${ICON.video}${group}<span class="br">${ICON.play}${fmtDur(a.duration)}</span>${check}</div>`;

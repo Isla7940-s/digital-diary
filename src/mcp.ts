@@ -24,6 +24,7 @@ export function withUrls(a: Attachment) {
     ...a,
     url: `${config.publicUrl}/files/${a.id}`,
     thumb_url: a.thumb ? `${config.publicUrl}/thumbs/${a.id}` : null,
+    live_url: a.live_offset !== null || a.live_path ? `${config.publicUrl}/files/${a.id}/live` : null,
   };
 }
 
@@ -193,7 +194,7 @@ export function buildMcpServer(store: Store): McpServer {
       if (a.text !== undefined && !path.extname(a.filename)) a.filename += ".txt";
     }
     const stored = await storeFile(file, a.filename, mime, a.taken_at ? new Date(a.taken_at) : undefined);
-    const rec = store.addAttachment(stored, a.filename, { entryId: a.entry_id, role: a.role, caption: a.caption });
+    const rec = store.pairLive(store.addAttachment(stored, a.filename, { entryId: a.entry_id, role: a.role, caption: a.caption })).attachment;
     warmViews(rec);
     return json(withUrls(rec));
   });

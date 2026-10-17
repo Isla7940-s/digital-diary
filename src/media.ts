@@ -176,7 +176,7 @@ export function removeViews(id: string) {
 export interface StoredFile {
   id: string; kind: Kind; mime: string; size: number; sha256: string;
   path: string; thumb: string | null; width: number | null; height: number | null;
-  duration: number | null; taken_at: string;
+  duration: number | null; taken_at: string; live_offset: number | null; content_id: string | null;
 }
 
 /**
@@ -211,7 +211,7 @@ export async function storeFile(tmpFile: string, originalName: string, givenMime
     if (kind === "video" && pr.width && pr.height) { t.width = pr.width; t.height = pr.height; }
   }
   const fallback = fileTime && !isNaN(fileTime.getTime()) && fileTime.getFullYear() > 1990 ? fileTime : now;
-  return { id, kind, mime, size, sha256, path: rel, ...t, duration, taken_at: localIso(taken ?? fallback) };
+  return { id, kind, mime, size, sha256, path: rel, ...t, duration, taken_at: localIso(taken ?? fallback), ...probeLive(dest, kind, mime) };
 }
 
 export function tmpPath(): string {
@@ -223,4 +223,89 @@ export function removeStored(rel: string, thumb: string | null) {
   const f = path.join(paths.media, rel);
   try { fs.chmodSync(f, 0o644); fs.unlinkSync(f); } catch { /* 已不存在 */ }
   if (thumb) try { fs.unlinkSync(path.join(paths.thumbs, thumb)); } catch { /* 已不存在 */ }
+}
+
+// ---------- 实况照片 / 动态照片 ----------
+// Google 动态照片（Motion Photo，含旧版 MicroVideo）：MP4 直接追加在 JPEG/HEIC 末尾，XMP 里写明长度或偏移。
+// 微信等转存时常会丢掉主 XMP，所以 XMP 没写时再从文件尾部找一段能一直数到文件结尾的 MP4 盒子链兜底。
+// Apple 实况照片：照片和一段 .MOV 是两个文件，靠 ContentIdentifier（同一个 UUID）配对，见 store.pairLive。
+
+/** 从 pos 开始按 ISO BMFF 盒子逐个跳，刚好落在文件结尾且含 moov 才算一段完整视频 */
+function mp4ChainToEnd(b: Buffer, pos: number): boolean {
+  if (b.toString("latin1", pos + 4, pos + 8) !== "ftyp") return false;
+  let p = pos, moov = false;
+  while (p + 8 <= b.length) {
+    let size = b.readUInt32BE(p);
+    const type = b.toString("latin1", p + 4, p + 8);
+    if (size === 1) {
+      if (p + 16 > b.length) return false;
+      size = Number(b.readBigUInt64BE(p + 8));
+    } else if (size === 0) size = b.length - p;
+    if (size < 8 || !/^[\x20-\x7e]{4}$/.test(type)) return false;
+    if (type === "moov") moov = true;
+    p += size;
+  }
+  return p === b.length && moov;
+}
+
+/** 返回内嵌 MP4 在文件中的起始字节；不是动态照片时返回 null */
+export function findMotionVideo(b: Buffer): number | null {
+  const head = b.toString("latin1", 0, Math.min(b.length, 256 * 1024));
+  const tryAt = (len: number) => {
+    const at = b.length - len;
+    return len > 0 && at > 0 && mp4ChainToEnd(b, at) ? at : null;
+  };
+  // 旧版 MicroVideo：偏移量是视频长度
+  const mv = /MicroVideoOffset\s*=\s*"(\d+)"|<GCamera:MicroVideoOffset>(\d+)</.exec(head);
+  if (mv) { const at = tryAt(Number(mv[1] ?? mv[2])); if (at !== null) return at; }
+  // 新版 Motion Photo：Container:Directory 里 Semantic="MotionPhoto" 的条目，长度 + 可选填充
+  for (const m of head.matchAll(/<Container:Item\b[^>]*?Item:Semantic="MotionPhoto"[^>]*>/g)) {
+    const len = Number(/Item:Length="(\d+)"/.exec(m[0])?.[1] ?? 0);
+    const pad = Number(/Item:Padding="(\d+)"/.exec(m[0])?.[1] ?? 0);
+    const at = tryAt(len + pad) ?? tryAt(len);
+    if (at !== null) return at;
+  }
+  // 兜底：从后往前找 ftyp
+  const ftyp = Buffer.from("ftyp");
+  for (let i = b.lastIndexOf(ftyp); i > 4; i = b.lastIndexOf(ftyp, i - 1)) {
+    if (mp4ChainToEnd(b, i - 4)) return i - 4;
+  }
+  return null;
+}
+
+const UUID_RE = /[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}/g;
+
+/**
+ * Apple 实况照片的配对标识：照片 EXIF MakerNote 里的 ContentIdentifier，
+ * 视频 QuickTime 元数据 com.apple.quicktime.content.identifier。两者是同一个 UUID
+ */
+export function appleContentId(b: Buffer, kind: Kind): string | null {
+  const s = b.toString("latin1");
+  if (kind === "video") {
+    const k = s.indexOf("com.apple.quicktime.content.identifier");
+    if (k < 0) return null;
+    // 键在 keys 盒子里，值在后面的 ilst 里；正常是 moov 里唯一的 UUID 字符串
+    UUID_RE.lastIndex = 0;
+    return UUID_RE.exec(s.slice(k))?.[0] ?? null;
+  }
+  if (!s.includes("Apple iOS")) return null;
+  const at = s.indexOf("Apple iOS");
+  UUID_RE.lastIndex = 0;
+  return UUID_RE.exec(s.slice(at, at + 64 * 1024))?.[0] ?? null;
+}
+
+export interface LiveInfo { live_offset: number | null; content_id: string | null }
+
+/** 上传时读一次：Google 动态照片的视频位置、Apple 实况照片的配对标识 */
+export function probeLive(file: string, kind: Kind, mime: string): LiveInfo {
+  const none = { live_offset: null, content_id: null };
+  if (kind !== "image" && kind !== "video") return none;
+  if (kind === "video" && mime !== "video/quicktime") return none;
+  try {
+    const b = fs.readFileSync(file);
+    return {
+      live_offset: kind === "image" && /^image\/(jpeg|heic|heif)$/.test(mime) ? findMotionVideo(b) : null,
+      content_id: appleContentId(b, kind),
+    };
+  } catch { return none; }
 }

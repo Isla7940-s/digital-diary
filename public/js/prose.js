@@ -1,6 +1,7 @@
 // 正文的只读排版（阅读页、日记详情）与影像块，编辑器也复用影像块的外观
 import { $$, esc, ICON, waveSvg, fmtDur, imgAttrs } from "./lib.js";
 import { renderHtml } from "./md.js";
+import { isLive, liveTag } from "./live.js";
 
 /**
  * 正文里的一个影像
@@ -32,7 +33,8 @@ export function mediaFigure(a, caption, { edit = false } = {}) {
     default:
       box = `<a class="pf" href="/files/${a.id}" target="_blank" rel="noopener">${ICON.file}<span>${esc(a.original_name)}</span></a>`;
   }
-  return `<figure class="pm k-${a.kind}" data-id="${a.id}"><div class="mbox">${box}</div>${cap}</figure>`;
+  const live = isLive(a) ? ` data-live="${a.id}"` : "";
+  return `<figure class="pm k-${a.kind}" data-id="${a.id}"><div class="mbox"${live}>${box}${live ? liveTag() : ""}</div>${cap}</figure>`;
 }
 
 /** 文字类影像在正文里显示全文 */

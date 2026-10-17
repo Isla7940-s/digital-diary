@@ -4,6 +4,7 @@
 // 视频 / 录音 / 文字 / 其他文件照常播放或阅读；右侧（手机为底部）信息面板可改说明、归组、下载、删除
 import { $, $$, api, esc, ICON, KIND_LABEL, fmtDay, fmtTime, fmtSize, fmtDur, weekday, waveSvg, emit, toast, confirmSheet, viewUrl } from "./lib.js";
 import { pickEntryDialog } from "./dialogs.js";
+import { isLive, liveUrl, playLive, LIVE_ICON } from "./live.js";
 
 const root = () => $("#viewer");
 let state = null;
@@ -34,6 +35,7 @@ export function openViewer(items, id, opts = {}) {
 
 export function closeViewer() {
   if (!state) return;
+  stopLive = null;
   root().innerHTML = "";
   root().hidden = true;
   root().className = "viewer";
@@ -58,7 +60,9 @@ function slideHtml(a, current) {
     // 三级加载：缩略图（立即）→ 适合屏幕的浏览版 → 放大超过浏览版清晰度时才取原图
     const full = viewUrl(a, screenPx(a));
     const first = a.thumb ? `/thumbs/${a.id}` : full;
-    return `<img class="${current ? "v-img" : "v-fit"}" src="${first}" data-full="${full}" data-orig="/files/${a.id}"${dims} alt="" draggable="false" decoding="async">`;
+    // 实况照片：视频叠在照片上、跟着照片一起缩放旋转，平时透明
+    const live = current && isLive(a) ? `<video class="live-v v-live" src="${liveUrl(a.id)}" muted playsinline preload="auto"></video>` : "";
+    return `<img class="${current ? "v-img" : "v-fit"}" src="${first}" data-full="${full}" data-orig="/files/${a.id}"${dims} alt="" draggable="false" decoding="async">${live}`;
   }
   if (!current) {
     // 相邻的非图片只放占位，避免两段视频同时加载
@@ -119,6 +123,7 @@ function render() {
           <button class="v-pct" data-act="fit" title="适应屏幕（0）/ 原始大小（1）">100%</button>
           <button class="vbtn" data-act="zin" aria-label="放大">${ICO.zin}</button>
           <button class="vbtn" data-act="rot" aria-label="旋转">${ICO.rot}</button></div>` : ""}
+        ${isLive(a) ? `<button class="v-livebtn" data-act="live" title="播放实况（手机上长按照片）">${LIVE_ICON}实况</button>` : ""}
         <a class="vbtn" href="/files/${a.id}?download=1" aria-label="下载">${ICON.dl}</a>
         <button class="vbtn ${info ? "on" : ""}" data-act="info" aria-label="信息">${ICON.info}</button>
       </header>
@@ -147,6 +152,10 @@ function render() {
   state.z = null;
   const img = $(".v-img", el);
   if (img) setupImage(img, a);
+  if (isLive(a)) {
+    const shown = a;
+    setTimeout(() => { if (state?.items[state.i] === shown && (state.z?.s ?? 1) <= 1.01) startLive(); }, 350);
+  }
   bindGestures();
 }
 
@@ -169,11 +178,11 @@ function stageBox() {
 }
 
 function setupImage(img, a) {
-  const z = state.z = { img, nw: a.width || 0, nh: a.height || 0, r: 0, s: 1, x: 0, y: 0, fit: 1, loadedW: loadedWidth(img.dataset.full), hires: false };
+  const live = img.parentElement.querySelector(".v-live");
+  const z = state.z = { img, live, nw: a.width || 0, nh: a.height || 0, r: 0, s: 1, x: 0, y: 0, fit: 1, loadedW: loadedWidth(img.dataset.full), hires: false };
   const ready = () => {
     if (!z.nw || !z.nh) { z.nw = img.naturalWidth; z.nh = img.naturalHeight; }
-    img.style.width = `${z.nw}px`;
-    img.style.height = `${z.nh}px`;
+    for (const m of [img, live]) if (m) { m.style.width = `${z.nw}px`; m.style.height = `${z.nh}px`; }
     refit();
   };
   if (z.nw && z.nh) ready();
@@ -196,8 +205,11 @@ const maxScale = (z) => Math.max(3, 4 / z.fit);  // 最多到原图的 400%
 function apply(anim = false) {
   const z = state?.z;
   if (!z) return;
-  z.img.classList.toggle("anim", anim);
-  z.img.style.transform = `translate(-50%, -50%) translate(${z.x}px, ${z.y}px) rotate(${z.r}deg) scale(${z.fit * z.s})`;
+  for (const m of [z.img, z.live]) {
+    if (!m) continue;
+    m.classList.toggle("anim", anim);
+    m.style.transform = `translate(-50%, -50%) translate(${z.x}px, ${z.y}px) rotate(${z.r}deg) scale(${z.fit * z.s})`;
+  }
   $("#vStage")?.classList.toggle("zoomed", z.s > 1.01);
   const pct = $(".v-pct");
   if (pct) pct.textContent = `${Math.round(z.fit * z.s * 100)}%`;
@@ -255,6 +267,24 @@ function rotate() {
   apply(true);
 }
 
+// ---------- 实况照片 ----------
+
+let stopLive = null;
+function startLive(muted = true) {
+  const box = $(".v-slide.cur");
+  const a = state?.items[state.i];
+  if (!box || !isLive(a)) return;
+  stopLive?.();
+  const btn = $(".v-livebtn");
+  btn?.classList.add("on");
+  const stop = playLive(box, a.id, { muted });
+  const v = $("video.live-v", box);
+  const done = () => { btn?.classList.remove("on"); if (stopLive === off) stopLive = null; };
+  const off = () => { stop(); done(); };
+  v?.addEventListener("ended", done, { once: true });
+  stopLive = off;
+}
+
 // ---------- 切换 ----------
 
 let stepping = false;
@@ -288,7 +318,12 @@ function bindGestures() {
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pts.size === 1) {
       g = { type: "pending", x0: e.clientX, y0: e.clientY, t0: performance.now(), tx: state.z?.x ?? 0, ty: state.z?.y ?? 0, touch: e.pointerType !== "mouse" };
+      if (g.touch && state.z?.live) {
+        const mine = g;
+        mine.press = setTimeout(() => { if (g === mine && g.type === "pending") { g.type = "live"; startLive(false); } }, 380);
+      }
     } else if (pts.size === 2 && isImg()) {
+      clearTimeout(g?.press);
       const [p, q] = [...pts.values()];
       g = { type: "pinch", d0: Math.hypot(p.x - q.x, p.y - q.y), m0: { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 }, s0: state.z.s, x0: state.z.x, y0: state.z.y };
       track.style.transform = "";
@@ -311,8 +346,10 @@ function bindGestures() {
       return apply();
     }
     const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
+    if (g.type === "live") return;
     if (g.type === "pending") {
       if (Math.hypot(dx, dy) < 6) return;
+      clearTimeout(g.press);
       if (isImg() && z.s > 1.01) g.type = "pan";
       else if (Math.abs(dx) > Math.abs(dy) && state.items.length > 1) g.type = "swipe";
       else if (dy > 0 && g.touch) g.type = "dismiss";
@@ -349,6 +386,8 @@ function bindGestures() {
       return;
     }
     if (pts.size) return;
+    clearTimeout(g.press);
+    if (g.type === "live") { stopLive?.(); g = null; return; }
     const dx = e.clientX - g.x0, dy = e.clientY - g.y0, dt = performance.now() - g.t0;
     if (g.type === "pan") { clampPan(); apply(true); }
     else if (g.type === "swipe") {
@@ -407,6 +446,7 @@ async function act(name) {
   if (name === "zin") return zoomBy(1.5);
   if (name === "zout") return zoomBy(1 / 1.5);
   if (name === "rot") return rotate();
+  if (name === "live") return startLive(false);
   if (name === "fit") return state.z && (state.z.s > 1.01 ? zoomTo(1) : zoomTo(1 / state.z.fit));
   if (name === "info") { state.info = !state.info; if (!mobile()) savePrefInfo(state.info); return render(); }
   if (name === "assign") {
@@ -451,6 +491,7 @@ document.addEventListener("keydown", (e) => {
   else if (k === "0") zoomTo(1);
   else if (k === "1") state.z && zoomTo(1 / state.z.fit);
   else if (k === "r" || k === "R") rotate();
+  else if (k === "l" || k === "L") startLive(false);
   else return;
   e.preventDefault();
 });

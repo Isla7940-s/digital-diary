@@ -117,6 +117,8 @@ export async function exportZip(store: Store, out: Writable, opts: ExportOptions
   const add = (a: Attachment, name: string) => {
     const data: ZipEntryData = { name, store: storeOnly(a) };  // 类型定义的 file() 漏了 zip 专属的 store，运行时是支持的
     zip.file(path.join(paths.media, a.path), data);
+    // Apple 实况照片：配对的 MOV 放在照片旁边、同名，相册软件能认回实况
+    if (a.live_path) zip.file(path.join(paths.media, a.live_path), { name: name.replace(/\.[^./]*$/, "") + path.extname(a.live_path).toUpperCase(), store: true } as ZipEntryData);
   };
   for (const e of v.entries) {
     const dir = `${e.kind === "article" ? "文章" : "日记"}/${e.date.slice(0, 4)}/${e.date}/${e.id}`;

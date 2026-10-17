@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DB } from "./db.js";
 import { paths } from "./config.js";
-import { localIso, removeStored, removeViews, type StoredFile, type Kind } from "./media.js";
+import { localIso, removeStored, removeViews, probeLive, type StoredFile, type Kind } from "./media.js";
 
 export type Role = "media" | "page";
 /** diary 纸质日记 | article 独立文章（没有纸质原稿，只在编辑页写和看） */
@@ -12,6 +12,8 @@ export interface Attachment {
   id: string; entry_id: string | null; role: Role; kind: Kind; original_name: string; mime: string; size: number;
   sha256: string; path: string; thumb: string | null; width: number | null; height: number | null;
   duration: number | null; taken_at: string; caption: string; position: number; created_at: string; deleted_at: string | null;
+  /** 实况照片：Google 动态照片内嵌 MP4 的起始字节 / Apple 实况照片配对的 MOV；content_id 为 Apple 的配对标识 */
+  live_offset: number | null; live_path: string | null; content_id: string | null;
 }
 
 export interface Entry {
@@ -253,11 +255,63 @@ export class Store {
     const entryId = opts.entryId ? this.entryRow(opts.entryId).id : null;
     const role: Role = entryId && opts.role === "page" ? "page" : "media";
     const pos = entryId ? this.nextPosition(entryId, role) : 0;
-    this.db.prepare(`INSERT INTO attachments(id, entry_id, role, kind, original_name, mime, size, sha256, path, thumb, width, height, duration, taken_at, caption, position, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(f.id, entryId, role, f.kind, originalName, f.mime, f.size, f.sha256, f.path, f.thumb, f.width, f.height, f.duration, f.taken_at, (opts.caption ?? "").trim(), pos, nowIso());
+    this.db.prepare(`INSERT INTO attachments(id, entry_id, role, kind, original_name, mime, size, sha256, path, thumb, width, height, duration, taken_at, caption, position, created_at, live_offset, content_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(f.id, entryId, role, f.kind, originalName, f.mime, f.size, f.sha256, f.path, f.thumb, f.width, f.height, f.duration, f.taken_at, (opts.caption ?? "").trim(), pos, nowIso(),
+        f.live_offset ?? null, f.content_id ?? null);
     if (entryId) this.touch(entryId);
     return this.getAttachment(f.id);
+  }
+
+  /**
+   * Apple 实况照片是「照片 + 短 MOV」两个文件，先后上传哪个都行：配对成功后 MOV 不再单独占一个附件，
+   * 只作为照片的 live_path 保留。返回照片（配对成功）或原附件。
+   * 配对条件：同一个 ContentIdentifier；两边都没有标识时退而求其次，用同名（IMG_1234.HEIC + IMG_1234.MOV）且一天内上传
+   */
+  pairLive(a: Attachment): { attachment: Attachment; merged: boolean } {
+    const isMov = a.kind === "video" && a.mime === "video/quicktime" && (a.duration ?? 0) <= 6;
+    const isPhoto = a.kind === "image" && a.live_offset === null && !a.live_path;
+    if (!isMov && !isPhoto) return { attachment: a, merged: false };
+    const base = a.original_name.replace(/\.[^.]+$/, "");
+    const match = "AND (content_id = ? OR (original_name LIKE ? ESCAPE '\\' AND created_at >= ?)) ORDER BY created_at DESC";
+    const cands = (isMov
+      ? this.db.prepare(`SELECT * FROM attachments WHERE kind = 'image' AND live_offset IS NULL AND live_path IS NULL AND deleted_at IS NULL AND id != ? ${match}`)
+      : this.db.prepare(`SELECT * FROM attachments WHERE kind = 'video' AND mime = 'video/quicktime' AND COALESCE(duration, 0) <= 6 AND deleted_at IS NULL AND id != ? ${match}`)
+    ).all(a.id, a.content_id ?? "", likeArg(base).slice(1, -1) + ".%", new Date(Date.now() - 86400_000).toISOString()) as Attachment[];
+    const other = (a.content_id && cands.find((c) => c.content_id === a.content_id))
+      || cands.find((c) => (!a.content_id || !c.content_id) && c.original_name.replace(/\.[^.]+$/, "").toLowerCase() === base.toLowerCase());
+    if (!other) return { attachment: a, merged: false };
+    const [photo, mov] = isMov ? [other, a] : [a, other];
+    // 视频已经被某篇正文引用了就不动它，免得正文里出现「影像不可用」
+    if (this.db.prepare("SELECT 1 FROM entries WHERE body LIKE ?").get(`%media:${mov.id})%`)) return { attachment: a, merged: false };
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE attachments SET live_path = ?, content_id = COALESCE(content_id, ?) WHERE id = ?").run(mov.path, mov.content_id, photo.id);
+      this.db.prepare("DELETE FROM attachments WHERE id = ?").run(mov.id);
+    })();
+    removeViews(mov.id);
+    if (mov.thumb) fs.rmSync(path.join(paths.thumbs, mov.thumb), { force: true });
+    if (mov.entry_id) this.touch(mov.entry_id);
+    return { attachment: this.getAttachment(photo.id), merged: isMov };
+  }
+
+  /** 升级后补扫一遍已有的照片和 MOV（只在加上实况照片字段后跑一次） */
+  async scanLive() {
+    const job = this.db.prepare("SELECT 1 FROM pending_jobs WHERE name = 'scan_live'").get();
+    if (!job) return;
+    const rows = this.db.prepare(`SELECT * FROM attachments WHERE (kind = 'image' AND mime IN ('image/jpeg','image/heic','image/heif')) OR mime = 'video/quicktime' ORDER BY created_at`).all() as Attachment[];
+    let found = 0;
+    for (const a of rows) {
+      const info = probeLive(path.join(paths.media, a.path), a.kind, a.mime);
+      if (info.live_offset === null && info.content_id === null) continue;
+      this.db.prepare("UPDATE attachments SET live_offset = ?, content_id = ? WHERE id = ?").run(info.live_offset, info.content_id, a.id);
+      if (info.live_offset !== null) found++;
+      await new Promise((r) => setImmediate(r));
+    }
+    for (const a of this.db.prepare("SELECT * FROM attachments WHERE kind = 'image' AND content_id IS NOT NULL AND deleted_at IS NULL").all() as Attachment[]) {
+      if (this.pairLive(a).attachment.live_path) found++;
+    }
+    this.db.prepare("DELETE FROM pending_jobs WHERE name = 'scan_live'").run();
+    if (found) console.log(`识别出 ${found} 张实况照片`);
   }
 
   private nextPosition(entryId: string, role: Role): number {
@@ -376,6 +430,7 @@ export class Store {
     removeViews(a.id);  // 浏览版按附件 id 缓存，附件删了就清掉
     const used = this.db.prepare("SELECT 1 FROM attachments WHERE path = ?").get(a.path);
     if (!used) removeStored(a.path, a.thumb);
+    if (a.live_path && !this.db.prepare("SELECT 1 FROM attachments WHERE live_path = ?").get(a.live_path)) removeStored(a.live_path, null);
   }
 
   // ---------- 回收站 / 标签 ----------

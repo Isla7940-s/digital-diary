@@ -93,9 +93,10 @@ export function createApp(store: Store) {
     const out = [];
     for (const [i, f] of files.entries()) {
       const stored = await storeFile(f.path, f.originalname, f.mimetype, mtimes[i] ? new Date(mtimes[i]) : undefined);
-      const rec = store.addAttachment(stored, f.originalname, { entryId, role });
+      // Apple 实况照片的 MOV 并进照片后不再单独出现：返回照片并标记 merged，前端不要重复插入
+      const { attachment: rec, merged } = store.pairLive(store.addAttachment(stored, f.originalname, { entryId, role }));
       warmViews(rec);
-      out.push(rec);
+      out.push(merged ? { ...rec, merged: true } : rec);
     }
     res.status(201).json(out);
   });
@@ -161,6 +162,27 @@ export function createApp(store: Store) {
     res.type(safeInline ? a.mime : "application/octet-stream");
     res.sendFile(path.join(paths.media, a.path), { maxAge: "1y", immutable: true });
   });
+  // 实况照片的视频：Google 动态照片从原图里切出内嵌的 MP4，Apple 实况照片是配对的 MOV；支持 Range 以便 Safari 播放和拖动
+  app.get("/files/:id/live", (req, res) => {
+    const a = store.getAttachment(req.params.id, true);
+    if (a.live_offset === null && !a.live_path) throw new NotFound("不是实况照片");
+    const file = path.join(paths.media, a.live_path ?? a.path);
+    const base = a.live_path ? 0 : a.live_offset!;
+    const total = fs.statSync(file).size - base;
+    res.set({ "Accept-Ranges": "bytes", "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff" });
+    res.type(a.live_path && /\.mov$/i.test(a.live_path) ? "video/quicktime" : "video/mp4");
+    let from = 0, to = total - 1;
+    const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ""));
+    if (m && (m[1] || m[2])) {
+      if (m[1]) { from = Number(m[1]); if (m[2]) to = Math.min(Number(m[2]), total - 1); }
+      else from = Math.max(0, total - Number(m[2]));
+      if (from > to) { res.status(416).set("Content-Range", `bytes */${total}`).end(); return; }
+      res.status(206).set("Content-Range", `bytes ${from}-${to}/${total}`);
+    }
+    res.set("Content-Length", String(to - from + 1));
+    if (req.method === "HEAD") { res.end(); return; }
+    fs.createReadStream(file, { start: base + from, end: base + to }).pipe(res);
+  });
   app.get("/thumbs/:id", (req, res) => {
     const a = store.getAttachment(req.params.id, true);
     if (!a.thumb) throw new NotFound("无缩略图");
@@ -184,6 +206,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const store = new Store(openDb());
   // 清理上次中断的上传留下的临时文件
   for (const f of fs.readdirSync(paths.tmp)) fs.rmSync(path.join(paths.tmp, f), { force: true, recursive: true });
+  // 升级后补扫已有照片里的实况照片（只跑一次，不阻塞启动）
+  store.scanLive().catch((e) => console.warn("实况照片补扫失败", e));
   createApp(store).listen(config.port, () => {
     console.log(`数字日记已启动：http://localhost:${config.port}`);
     console.log(`MCP 端点：${config.publicUrl}/mcp`);

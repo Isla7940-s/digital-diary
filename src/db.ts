@@ -96,5 +96,15 @@ export function openDb(file = paths.db): DB {
   if (!entryCols.some((c) => c.name === "body")) db.exec("ALTER TABLE entries ADD COLUMN body TEXT NOT NULL DEFAULT ''");
   // v3 → v4：区分纸质日记与独立文章（文章不对应纸质本，编号以 A 开头）
   if (!entryCols.some((c) => c.name === "kind")) db.exec("ALTER TABLE entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'diary'");
+  // v4 → v5：实况照片。live_offset 为 Google 动态照片里 MP4 的起始字节；live_path 为 Apple 实况照片配对的 MOV（相对 media 目录）；
+  // content_id 为 Apple 的配对标识。已有照片在启动后由 Store.scanLive 补扫一遍
+  const attCols = db.prepare("PRAGMA table_info(attachments)").all() as { name: string }[];
+  if (!attCols.some((c) => c.name === "live_offset")) {
+    db.exec("ALTER TABLE attachments ADD COLUMN live_offset INTEGER");
+    db.exec("ALTER TABLE attachments ADD COLUMN live_path TEXT");
+    db.exec("ALTER TABLE attachments ADD COLUMN content_id TEXT");
+    db.exec("CREATE TABLE IF NOT EXISTS pending_jobs (name TEXT PRIMARY KEY)");
+    db.exec("INSERT OR IGNORE INTO pending_jobs(name) VALUES ('scan_live')");
+  }
   return db;
 }
