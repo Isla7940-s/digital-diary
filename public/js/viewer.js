@@ -39,6 +39,7 @@ export function closeViewer() {
   root().innerHTML = "";
   root().hidden = true;
   root().className = "viewer";
+  root().style.removeProperty("--bg-a");  // 下滑关闭时留下的半透明背景
   document.body.style.overflow = "";
   state = null;
 }
