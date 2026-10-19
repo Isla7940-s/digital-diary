@@ -39,7 +39,7 @@ export async function render({ app, query }) {
       <select id="enMonth" style="width:auto" title="按月筛选"><option value="">全部月份</option></select>
       <span class="spacer"></span>
     </div>
-    <div class="toolbar" id="enTags"></div>
+    <div class="toolbar tag-row" id="enTags"></div>
     <div class="entry-grid" id="enGrid"></div>
     <div class="load-sentinel" id="enMore"></div>`;
 

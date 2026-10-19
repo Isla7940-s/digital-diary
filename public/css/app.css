@@ -627,6 +627,10 @@ pre.code { background: #2E271C; color: #F6E9C6; padding: 12px 84px 12px 14px; bo
   .ar-cover { width: 76px; height: 76px; }
   .zoom { display: none; }
   .search { flex: 1 1 100%; }
+  /* 标签多时会占满一屏：手机上收成一行横向滑动 */
+  .tag-row { flex-wrap: nowrap; overflow-x: auto; margin: 0 -14px 14px; padding: 0 14px; gap: 8px; scrollbar-width: none; overscroll-behavior-x: contain; }
+  .tag-row::-webkit-scrollbar { display: none; }
+  .tag-row .chip { flex: none; }
   .hero { grid-template-columns: 1fr; padding: 18px; gap: 14px; }
   .qr-card { grid-auto-flow: column; justify-content: start; align-items: center; justify-self: stretch; }
   .qr-card img { width: 92px; height: 92px; }
